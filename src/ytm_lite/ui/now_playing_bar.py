@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QStyle,
+    QStyleOptionSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -56,26 +57,67 @@ class ElidedLabel(QLabel):
         super().setText(metrics.elidedText(self._full, Qt.TextElideMode.ElideRight, self.width()))
 
 
-class SeekSlider(QSlider):
-    """A slider that jumps to where you click instead of paging."""
+class ClickSlider(QSlider):
+    """A horizontal slider you can click or drag anywhere along its height.
+
+    The theme draws a 4 px groove, and QSlider reacts only to clicks right on it (and
+    then just by a page step), so most clicks did nothing. Here a press jumps straight
+    to the clicked value and the handle follows the mouse until it is released.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # arrow keys stay with the lists
+
+    def value_at(self, x: float) -> int:
+        """The value under horizontal position `x`; the ends of the groove are the
+        minimum and maximum (the handle's centre can't go further)."""
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        style, control = self.style(), QStyle.ComplexControl.CC_Slider
+        groove = style.subControlRect(control, option, QStyle.SubControl.SC_SliderGroove, self)
+        handle = style.subControlRect(control, option, QStyle.SubControl.SC_SliderHandle, self)
+        span = max(1, groove.width() - handle.width())
+        offset = round(x - groove.x() - handle.width() / 2)
+        return QStyle.sliderValueFromPosition(
+            self.minimum(), self.maximum(), max(0, min(offset, span)), span
+        )
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        event.accept()
+        self.setSliderDown(True)
+        self.setSliderPosition(self.value_at(event.position().x()))
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self.isSliderDown() and event.buttons() & Qt.MouseButton.LeftButton:
+            event.accept()
+            self.setSliderPosition(self.value_at(event.position().x()))
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
+            event.accept()
+            self.setSliderDown(False)
+        else:
+            super().mouseReleaseEvent(event)
+
+
+class SeekSlider(ClickSlider):
+    """Seeks when the mouse is released, not on every pixel of a drag."""
 
     seek_requested = Signal(float)  # seconds
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(Qt.Orientation.Horizontal, parent)
+        super().__init__(parent)
         self.sliderReleased.connect(self._released)
 
     def _released(self) -> None:
-        self.seek_requested.emit(self.value() / _SLIDER_SCALE)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self.maximum() > 0:
-            value = QStyle.sliderValueFromPosition(
-                self.minimum(), self.maximum(), int(event.position().x()), self.width()
-            )
-            self.setValue(value)
-            self.seek_requested.emit(value / _SLIDER_SCALE)
-        super().mousePressEvent(event)
+        if self.maximum() > 0:
+            self.seek_requested.emit(self.value() / _SLIDER_SCALE)
 
 
 def _button(icon: QIcon, tip: str, *, checkable: bool = False, size: int = 20) -> QToolButton:
@@ -150,10 +192,11 @@ class NowPlayingBar(QWidget):
         self.seek = SeekSlider()
         self.seek.setMinimumWidth(200)
         self.seek.seek_requested.connect(self.seek_requested)
+        self.seek.sliderMoved.connect(self._seek_dragged)
 
         volume_icon = QLabel()
         volume_icon.setPixmap(icons.icon("volume", 18, icons.DIM).pixmap(18, 18))
-        self.volume = QSlider(Qt.Orientation.Horizontal)
+        self.volume = ClickSlider()
         self.volume.setRange(0, 100)
         self.volume.setFixedWidth(96)
         self.volume.setToolTip("Volume")
@@ -261,10 +304,10 @@ class NowPlayingBar(QWidget):
         self.volume.blockSignals(False)
 
     def set_position(self, position: float | None, duration: float | None) -> None:
-        self.elapsed.setText(format_duration(position) if position is not None else "0:00")
         self.total.setText(format_duration(duration) if duration else "0:00")
         if self.seek.isSliderDown():
-            return
+            return  # the elapsed time follows the drag instead
+        self.elapsed.setText(format_duration(position) if position is not None else "0:00")
         maximum = int((duration or 0) * _SLIDER_SCALE)
         if self.seek.maximum() != maximum:
             self.seek.setMaximum(maximum)
@@ -276,6 +319,9 @@ class NowPlayingBar(QWidget):
 
     def _volume_moved(self, value: int) -> None:
         self.volume_changed.emit(float(value))
+
+    def _seek_dragged(self, value: int) -> None:
+        self.elapsed.setText(format_duration(value / _SLIDER_SCALE))
 
     def _cover_px(self) -> int:
         return round(COVER * self.devicePixelRatioF())
