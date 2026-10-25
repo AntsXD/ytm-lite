@@ -38,6 +38,21 @@ Windows 11, Python 3.14.7, PySide6 6.12.0, mpv 0.41 (shinchiro 2026-10-21), yt-d
 ytmusicapi 1.12.3, pywinrt 4.0.3, running from source; from milestone 5 also the packaged
 build (Nuitka 4.3.1, MSVC 14.5).
 
+### Release 0.1.0 (2026-10-25)
+
+After milestone 5, Home was redesigned: shelves of big covers that scroll sideways. The release
+build, packaged and signed out:
+
+| Spec target | Measured | |
+|---|---|---|
+| Playing, window open, 200+ track list < 150 MB | 149.6 MB RSS / 86.7 MB private steady (public 462-track playlist); 226.5 MB peak while the worker is up | ✅ at the line |
+| Cold start < 2 s | 0.58 s median (5.94 s the first time after the build) | ✅ |
+
+Home stays open behind the playlist, and with its bigger covers it costs about 5 MB more in
+the window scenario than milestone 5's Home did (149.6 MB against 144.6 MB). Signed in wasn't
+measured again; in milestone 5 it read 5.6 MB above signed out, which would put it above the
+150 MB line. The tray scenarios don't build the window, so Home doesn't change them.
+
 ### Milestone 5 (2026-10-25)
 
 | Spec target | Packaged, signed in (677-song library) | Packaged, signed out | Source, signed out | |

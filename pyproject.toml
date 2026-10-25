@@ -3,6 +3,8 @@ name = "ytm-lite"
 version = "0.1.0"
 description = "Lightweight native YouTube Music desktop client: Qt Widgets UI, libmpv audio, no embedded browser."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "PySide6-Essentials>=6.12",

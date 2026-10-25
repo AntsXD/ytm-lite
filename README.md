@@ -9,11 +9,15 @@
 A native Qt window and libmpv for the sound, with no browser inside.<br>
 About 70 MB of RAM while it plays from the tray, 0.6 s to start.
 
+**[Download for Windows](https://github.com/AntsXD/ytm-lite/releases/latest)** · [Run from source](#run-from-source)
+
+[![Latest release](https://img.shields.io/github/v/release/AntsXD/ytm-lite?label=release&color=8b5cf6)](https://github.com/AntsXD/ytm-lite/releases/latest)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-8b5cf6)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-8b5cf6?logo=python&logoColor=white)
 ![Qt 6 with PySide6](https://img.shields.io/badge/UI-Qt%206%20%C2%B7%20PySide6-8b5cf6?logo=qt&logoColor=white)
 ![Audio by libmpv](https://img.shields.io/badge/audio-libmpv-8b5cf6)
 ![No telemetry](https://img.shields.io/badge/telemetry-none-8b5cf6)
+[![MIT license](https://img.shields.io/badge/license-MIT-8b5cf6)](LICENSE)
 
 <img src="docs/images/home.png" alt="ytm-lite's Home page: Quick picks in columns, a shelf of big playlist covers that scrolls sideways, and a song playing in the bar at the bottom">
 
@@ -28,12 +32,13 @@ happens in a helper process that exits when it's done, and the music keeps going
 
 | 💤 Idle in the tray | 🎵 Playing from the tray | 🪟 Playing, window open | 🚀 Cold start |
 |:---:|:---:|:---:|:---:|
-| **4–14 MB** | **58–70 MB** | **145–150 MB** | **0.6 s** |
+| **4–14 MB** | **58–70 MB** | **~150 MB** | **0.6 s** |
 
-Measured on the packaged app, signed in and signed out, as the Windows working set of all its
-processes, with a 460–680-song playlist on screen for the window. Task Manager's Memory column
-shows less, because it leaves out memory shared with other programs. Playing from the tray takes
-under 2% of one CPU core, and songs change without a gap.
+Measured on the packaged app as the Windows working set of all its processes: in the tray signed
+in and signed out, with the window open signed out and a 460-song playlist on screen (a big
+signed-in library adds a few MB). Task Manager's Memory column shows less, because it leaves out
+memory shared with other programs. Playing from the tray takes under 2% of one CPU core, and
+songs change without a gap.
 [How it's measured, and every number so far](docs/MEASUREMENTS.md).
 
 ## Features
@@ -96,6 +101,22 @@ under 2% of one CPU core, and songs change without a gap.
 
 ## Getting started
 
+### Download
+
+Get the `windows-x64.zip` from the
+[latest release](https://github.com/AntsXD/ytm-lite/releases/latest), unzip it anywhere and run
+`ytm-lite.exe` (Windows 10 or 11, 64-bit). Everything it needs is in the folder: no installer,
+no Python.
+
+- The app isn't code-signed, so Windows may warn the first time ("Windows protected your PC"):
+  choose **More info**, then **Run anyway**. If Smart App Control blocks it, run it from source
+  instead.
+- The first start adds **ytm-lite** to the Start menu, which is how Windows knows its name and
+  icon in the media overlay. Settings, your sign-in and caches go to `%LOCALAPPDATA%\ytm-lite`.
+  To remove the app, delete its folder, that one and the Start menu entry.
+
+### Run from source
+
 You need Windows 10 or 11, Python 3.11 or newer and
 [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
@@ -107,21 +128,20 @@ uv run python tools/fetch_libmpv.py    # the audio engine: a pinned libmpv build
 uv run python -m ytm_lite
 ```
 
-**A standalone app.** `tools/build.py` turns it into a folder, `dist/ytm-lite/`, that you can
-copy anywhere and run without installing Python; Qt, libmpv and Deno are inside. It needs
-Visual Studio's C++ build tools and takes about two minutes:
+On Linux, install libmpv from your package manager instead of running `fetch_libmpv.py` (see
+the [FAQ](#faq)).
+
+### Build the app yourself
+
+`tools/build.py` makes the folder the release zips up, in `dist/ytm-lite/`, with Qt, libmpv,
+Python and Deno inside. It needs Visual Studio's C++ build tools and takes about two minutes:
 
 ```bash
 uv sync --group build
-uv run python tools/build.py
+uv run python tools/build.py --zip
 ```
 
-The first time the packaged app runs, it adds **ytm-lite** to the Start menu, which is how
-Windows knows its name and icon in the media overlay.
 [Development](docs/DEVELOPMENT.md#build-the-windows-package) has the details.
-
-On Linux, install libmpv from your package manager instead of running `fetch_libmpv.py` (see
-the [FAQ](#faq)).
 
 ## Signing in
 
@@ -314,6 +334,13 @@ uv run ruff check . && uv run ruff format --check .
   together.
 - [docs/MEASUREMENTS.md](docs/MEASUREMENTS.md): how memory, CPU and start time are measured,
   with the numbers and findings from every milestone.
+
+## License
+
+ytm-lite's code is under the [MIT License](LICENSE). The Windows download also bundles
+third-party software under its own licenses, among them libmpv under the GPL v3, so the download
+as a whole is distributed under the GPL v3. `THIRD-PARTY-NOTICES.txt` in the zip lists every
+component, its license and where its source is.
 
 ## Credits
 

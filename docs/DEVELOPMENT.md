@@ -46,10 +46,11 @@ track-transition gap).
 ```bash
 uv sync --group build
 uv run python tools/fetch_libmpv.py
-uv run python tools/build.py
+uv run python tools/build.py --zip
 ```
 
-`tools/build.py` writes `dist/ytm-lite/` (about 360 MB; zip the folder to share it):
+`tools/build.py` writes `dist/ytm-lite/` (about 360 MB); with `--zip` it also packs it into
+`dist/ytm-lite-<version>-windows-x64.zip`, the file a release carries. The folder holds:
 
 - `ytm-lite.exe` with Qt and Python: the app, compiled by Nuitka (about 70 MB). yt-dlp,
   ytmusicapi and `requests` are not in it; only the worker uses them.
@@ -57,6 +58,11 @@ uv run python tools/build.py
 - `worker/`: python.org's embeddable Python 3.14 (pinned, SHA-256 checked) that runs the worker,
   with yt-dlp, yt-dlp-ejs, ytmusicapi and their dependencies (the files installed in `.venv`,
   precompiled) and `deno.exe` (98 MB) for Premium streams.
+- `README.txt` (starting and removing the app), `LICENSE.txt`, and `THIRD-PARTY-NOTICES.txt`
+  with `licenses/`: every bundled component, its license texts and where its source is.
+  `tools/licenses/` keeps the texts some packages don't ship themselves. The libmpv build is
+  GPL (mpv's GPL option, FFmpeg with `--enable-gpl --enable-version3`), so the package as a
+  whole is distributed under the GPL v3.
 
 A build takes about two minutes with Visual Studio 2026's C++ compiler. The packaged app keeps
 its settings, library cache and logs where the source run does, so the two share your sign-in
@@ -66,6 +72,19 @@ carries the app's AppUserModelID (`AntsXD.ytm-lite`), which is how Windows knows
 icon to show in the media overlay. To remove it, delete
 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\ytm-lite.lnk`. The build isn't code-signed,
 so the first start after a build takes a few extra seconds while Windows checks the new files.
+
+## Release
+
+1. Set `version` in `pyproject.toml`; the build and the zip's name use it.
+2. Build with `--zip` and check the build:
+   `uv run python tools/measure.py --exe dist/ytm-lite/ytm-lite.exe startup window`.
+3. Commit, tag and push, then publish the zip (here for 0.1.0):
+
+```bash
+git tag -a v0.1.0 -m "ytm-lite 0.1.0"
+git push origin main v0.1.0
+gh release create v0.1.0 dist/ytm-lite-0.1.0-windows-x64.zip --verify-tag --title "ytm-lite 0.1.0" --notes-file notes.md
+```
 
 ## Measure
 
