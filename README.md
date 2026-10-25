@@ -88,6 +88,10 @@ uv run python -m ytm_lite
 - **One copy per profile.** Starting the app again brings up the running copy's window;
   `--play-pause`, `--next` and `--previous` (or `--prev`) are passed to the running copy, e.g.
   from a hotkey tool: `uv run python -m ytm_lite --next`.
+- **Plays count.** Signed in, a song you've played for 10 s (pauses don't count) is added to your
+  YouTube Music history, as YouTube Music's own player does, so it shows up in your history,
+  your recommendations and your yearly Recap. Set `"report_history": false` in `settings.json`
+  to keep plays out of your history.
 - Shortcuts: Space play/pause, Ctrl+→ / Ctrl+← next/previous, Ctrl+L like, Ctrl+F search,
   Alt+← / Alt+→ back/forward, Ctrl+Q quit.
 - The queue, your place in it (paused), shuffle and repeat, volume and the window layout come back
@@ -120,6 +124,25 @@ stored encrypted with Windows DPAPI (owner-only file elsewhere), and handed to t
 memory; they are never written to disk in plain text or logged. "Continue without signing in"
 still lets you search, open albums and artists and play anything (standard quality); your
 library and likes need a sign-in.
+
+## Privacy, security and your account
+
+- The app talks only to YouTube and Google servers (the YouTube Music API, the audio servers,
+  cover images). It has no telemetry and listens on no network port; the single-instance
+  channel is a local pipe only your Windows user can open, and it accepts four commands.
+- Everything goes over HTTPS with certificate checks, including the audio streams: mpv doesn't
+  check certificates unless told to, so the app turns that on and gives it certifi's CA bundle
+  (the Windows libmpv build's OpenSSL has no store of its own). The stream requests carry no
+  cookies.
+- Premium streams need YouTube's JavaScript challenge solved. yt-dlp runs it in Deno with no
+  file, network or environment permissions.
+- Your cookies are as good as being signed in to YouTube. DPAPI keeps them from other Windows
+  users and from anyone who takes the disk, not from malware running as you (Firefox keeps the
+  same cookies unencrypted in its profile).
+- This is an unofficial client: YouTube's terms cover its own apps, and yt-dlp's maintainers warn
+  that an account used with yt-dlp can be banned, depending on request rate and download volume.
+  The app asks for one stream per song you play (plus the next one ahead of time) and downloads
+  nothing to disk; the song you start yourself is resolved without your account.
 
 ## Develop
 
@@ -188,6 +211,12 @@ the media overlay adds ~5 MB private (pywinrt) and ~6 MB of working set in Windo
 11–17 MB above milestone 3's and closer to the 150 MB line. The cold start differs from
 milestone 3's table because of the machine, not the code: the milestone 3 code starts in 0.70 s
 today, and milestone 4 adds ~70 ms.
+
+After milestone 4, mpv checks the audio servers' certificates and plays are reported to your
+history. Measured the same way, signed out: playing from the tray 72.1 MB / 73.5 MB, the big
+playlist as the queue 144.2 MB / 93.1 MB. The CA bundle OpenSSL loads for each stream
+connection costs ~2 MB private; history reporting runs in the worker and costs the player
+nothing.
 
 Findings that shaped milestone 4:
 

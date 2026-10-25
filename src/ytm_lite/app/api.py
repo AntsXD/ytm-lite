@@ -104,6 +104,11 @@ class Api:
         self._require_auth()
         self._call("rate_song", {"video_id": video_id, "liked": liked})
 
+    def add_history(self, video_id: str) -> None:
+        """Record a play in the account's history (recommendations, the yearly Recap)."""
+        self._require_auth()
+        self._call("add_history", {"video_id": video_id}, background=True)
+
     def radio(self, video_id: str) -> list[Track]:
         """Radio suggestions seeded by a track (works signed out too); the seed itself
         usually comes back first."""

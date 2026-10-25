@@ -66,6 +66,15 @@ _LOG_LEVELS = {
 _STREAM_ERROR_HINTS = ("HTTP error", "Failed to open", "Forbidden", "Connection reset")
 
 
+def tls_options() -> dict[str, str]:
+    """mpv doesn't check the stream servers' certificates unless told to. FFmpeg's TLS
+    in the Windows libmpv build is OpenSSL with no CA store of its own, so mpv is given
+    certifi's bundle (the same one the worker's requests use) on every platform."""
+    import certifi
+
+    return {"tls-verify": "yes", "tls-ca-file": certifi.where()}
+
+
 def mpv_option_string(options: Mapping[str, str]) -> str:
     """Per-file loadfile options. Values are length-quoted (%n%) so commas are safe."""
     return ",".join(f"{key}=%{len(value.encode())}%{value}" for key, value in options.items())
@@ -105,7 +114,8 @@ class Player(QObject):
             locale.setlocale(locale.LC_NUMERIC, "C")
             import mpv
 
-            options = {key.replace("-", "_"): value for key, value in MPV_OPTIONS.items()}
+            all_options = {**MPV_OPTIONS, **tls_options()}
+            options = {key.replace("-", "_"): value for key, value in all_options.items()}
             instance = mpv.MPV(log_handler=self._on_log, loglevel="warn", **options)
             instance.volume = self._volume
             instance.register_event_callback(self._on_event)

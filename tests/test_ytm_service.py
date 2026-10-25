@@ -71,6 +71,16 @@ class FakeClient:
     def get_artist(self, channel_id: str) -> dict[str, Any]:
         return {"name": "Artist", "songs": {"results": [{"videoId": "x", "title": "Hit"}]}}
 
+    def get_song(self, videoId: str) -> dict[str, Any]:
+        url = f"https://music.youtube.com/api/stats/playback?docid={videoId}&client=me"
+        return {"playbackTracking": {"videostatsPlaybackUrl": {"baseUrl": url}}}
+
+    def add_history_item(self, song: dict[str, Any]) -> Any:
+        self.history_pings = [*getattr(self, "history_pings", []), song]
+        return type("Response", (), {"status_code": self.history_status})()
+
+    history_status = 204
+
     def get_watch_playlist(self, videoId: str, radio: bool, limit: int) -> dict[str, Any]:
         assert radio
         tracks = [{"videoId": videoId, "title": "Seed", "length": "3:07"}]
@@ -106,6 +116,21 @@ def test_calls_return_compact_json(service: tuple[YtmService, list[Any]]) -> Non
     radio = svc.call("radio", {"video_id": "seed"})
     assert [t["v"] for t in radio] == ["seed", "r0", "r1"]
     assert radio[0]["d"] == 187
+
+
+def test_history_ping_uses_the_same_client_as_its_url(
+    service: tuple[YtmService, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    svc, created = service
+    svc.configure({"cookie": "a=b"}, None)
+    assert svc.call("add_history", {"video_id": "v1"}, background=True) is None
+    (client,) = created
+    url = client.history_pings[0]["playbackTracking"]["videostatsPlaybackUrl"]["baseUrl"]
+    assert "docid=v1" in url  # pinged by the client that fetched the song
+    monkeypatch.setattr(FakeClient, "history_status", 403)
+    with pytest.raises(ServiceError) as excinfo:
+        svc.call("add_history", {"video_id": "v2"})
+    assert excinfo.value.kind is ApiErrorKind.SERVER
 
 
 def test_pool_reuse_new_credentials_and_one_off_headers(

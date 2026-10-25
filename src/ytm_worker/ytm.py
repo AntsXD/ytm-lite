@@ -256,6 +256,16 @@ def _rate_song(c: Any, args: dict[str, Any]) -> Any:
     return None
 
 
+def _add_history(c: Any, args: dict[str, Any]) -> Any:
+    """Add a play to the account's history: the ping YouTube Music's own player sends
+    when a song starts. The URL comes from the song's player response and must be called
+    by the same client that fetched it."""
+    response = c.add_history_item(c.get_song(str(args["video_id"])))
+    if response.status_code != 204:
+        raise ServiceError(ApiErrorKind.SERVER, f"history: HTTP {response.status_code}")
+    return None
+
+
 def _radio(c: Any, args: dict[str, Any]) -> Any:
     raw = c.get_watch_playlist(
         videoId=str(args["video_id"]), radio=True, limit=int(args.get("limit") or RADIO_LIMIT)
@@ -292,6 +302,7 @@ _OPERATIONS: dict[str, Callable[[Any, dict[str, Any]], Any]] = {
     "library_artists": _library_artists,
     "playlist": _playlist,
     "rate_song": _rate_song,
+    "add_history": _add_history,
     "radio": _radio,
     "search": _search,
     "search_suggestions": _search_suggestions,

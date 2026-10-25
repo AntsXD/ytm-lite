@@ -98,6 +98,7 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     from ytm_lite.app.api import Api
     from ytm_lite.app.dev import TEST_TRACKS
+    from ytm_lite.app.history import HistoryReporter
     from ytm_lite.app.images import ImageLoader
     from ytm_lite.app.library import Library
     from ytm_lite.app.library_cache import LibraryCache
@@ -188,8 +189,23 @@ def run(argv: Sequence[str] | None = None) -> int:
         args.open_playlist = args.autoplay_playlist
         library.playlist_updated.connect(play_when_loaded)
     testing_playback = args.autoplay or args.autoplay_playlist
-    # Test and measurement runs (e.g. measure.py --real-profile) never save the session.
-    keeper.read_only = bool(testing_playback or args.measure_ready)
+    # Test and measurement runs (e.g. measure.py --real-profile) never save the session
+    # or add plays to the account's history.
+    testing_run = bool(testing_playback or args.measure_ready)
+    keeper.read_only = testing_run
+
+    def report_play(video_id: str) -> None:
+        if testing_run or not settings.report_history or not api.signed_in:
+            return
+        workers.submit(
+            lambda: api.add_history(video_id),
+            on_done=lambda _: log.info("added %s to the account's history", video_id),
+            on_error=lambda error: log.warning("history for %s failed: %s", video_id, error),
+            priority=WorkPriority.BACKGROUND,
+        )
+
+    history = HistoryReporter(controller, app)
+    history.played.connect(report_play)
 
     def restore_queue(queue: SavedQueue | None) -> None:
         if controller.queue.current() is not None:

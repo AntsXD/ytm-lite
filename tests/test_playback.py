@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 from ytm_lite.app.models import Track
 from ytm_lite.app.play_queue import PlayQueue, RepeatMode
 from ytm_lite.app.playback import PlaybackController, PlaybackState
-from ytm_lite.app.player import Player
+from ytm_lite.app.player import Player, tls_options
 from ytm_lite.app.resolver import ResolverClient, StreamInfo
 from ytm_lite.app.worker_client import WorkerProcess
 from ytm_worker.protocol import Priority
@@ -620,3 +620,9 @@ def test_shuffle_play_starts_with_the_chosen_track(rig: Rig) -> None:
     assert sorted(rig.ids()) == list("abcdef")
     assert modes == [True]
     assert rig.resolver.requests == [("d", NOW, FAST)]
+
+
+def test_stream_certificates_are_checked() -> None:
+    options = tls_options()
+    assert options["tls-verify"] == "yes"
+    assert Path(options["tls-ca-file"]).is_file()

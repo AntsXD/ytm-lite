@@ -83,6 +83,17 @@ def test_results_become_models() -> None:
     assert worker.calls[-1][3] == CREDS.ytmusic_headers()
 
 
+def test_history_needs_an_account_and_runs_in_the_background() -> None:
+    api, worker = make()
+    with pytest.raises(ApiError):
+        api.add_history("v")
+    assert worker.calls == []
+    api.set_credentials(CREDS)
+    worker.answers["add_history"] = None
+    api.add_history("v")
+    assert worker.calls[-1] == ("add_history", {"video_id": "v"}, True, None)
+
+
 def test_radio_works_signed_out() -> None:
     api, worker = make()
     worker.answers["radio"] = [codec.track_to_json(Track("r1", "R1", duration=120))]
