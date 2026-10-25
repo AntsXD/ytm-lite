@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Fetched binaries (tools/fetch_libmpv.py) and build output
+vendor/
+dist/
+build/
+*.build/
+*.dist/
+
+# Measurement runs and logs
+.measure/
+*.log
