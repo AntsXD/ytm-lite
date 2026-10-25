@@ -109,6 +109,7 @@ QToolTip {{ background: {RAISED}; color: {TEXT}; border: 1px solid #3a3a3a; padd
 }}
 #Banner {{ background: {WARNING_BG}; border-radius: {RADIUS}px; }}
 #DebugOverlay {{ background: #000000; border: 1px solid #444444; }}
+#MiniPlayer {{ background: {PANEL}; border: 1px solid #333333; }}
 """
 
 

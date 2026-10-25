@@ -151,7 +151,7 @@ class CoverView(QWidget):
         draw_cover(painter, self.rect(), self.pixmap, 4)
 
 
-def _button(icon: QIcon, tip: str, *, checkable: bool = False, size: int = 20) -> QToolButton:
+def bar_button(icon: QIcon, tip: str, *, checkable: bool = False, size: int = 20) -> QToolButton:
     button = QToolButton()
     button.setIcon(icon)
     button.setIconSize(QSize(size, size))
@@ -172,6 +172,8 @@ class NowPlayingBar(QWidget):
     repeat_clicked = Signal()  # cycles off -> all -> one
     like_clicked = Signal()
     queue_toggled = Signal(bool)
+    lyrics_toggled = Signal(bool)
+    mini_player_clicked = Signal()
 
     def __init__(self, images: ImageLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -194,7 +196,7 @@ class NowPlayingBar(QWidget):
         self.artist.setObjectName("Dim")
         self.artist.setFont(font(9))
         heart = icons.toggle_icon("heart_outline", on_name="heart")
-        self.like_button = _button(heart, "Like (Ctrl+L)", checkable=True)
+        self.like_button = bar_button(heart, "Like (Ctrl+L)", checkable=True)
         self.like_button.setEnabled(False)
         self.like_button.clicked.connect(self.like_clicked)
         text_box = QVBoxLayout()
@@ -214,16 +216,16 @@ class NowPlayingBar(QWidget):
 
         # Centre: transport above the seek bar.
         dim, bright = icons.DIM, icons.NORMAL
-        self.shuffle_button = _button(icons.toggle_icon("shuffle"), "Shuffle", checkable=True)
-        self.prev_button = _button(
+        self.shuffle_button = bar_button(icons.toggle_icon("shuffle"), "Shuffle", checkable=True)
+        self.prev_button = bar_button(
             icons.icon("previous", 24, dim, hover=bright), "Previous (Ctrl+←)", size=24
         )
         self.play_button = CircleButton("play", 36, "#ffffff", "#000000", "#e6e6e6")
         self.play_button.setToolTip("Play (Space)")
-        self.next_button = _button(
+        self.next_button = bar_button(
             icons.icon("next", 24, dim, hover=bright), "Next (Ctrl+→)", size=24
         )
-        self.repeat_button = _button(self._icons["repeat"], _REPEAT_TIPS[RepeatMode.OFF])
+        self.repeat_button = bar_button(self._icons["repeat"], _REPEAT_TIPS[RepeatMode.OFF])
         self.repeat_button.setCheckable(True)
         self.shuffle_button.clicked.connect(self.shuffle_toggled)
         self.prev_button.clicked.connect(self.previous_clicked)
@@ -273,11 +275,17 @@ class NowPlayingBar(QWidget):
         self.quality = QLabel("")
         self.quality.setObjectName("Dim")
         self.quality.setFont(font(8.5))
-        self.queue_button = _button(
+        self.queue_button = bar_button(
             icons.toggle_icon("queue", 22), "Queue", checkable=True, size=22
         )
         self.queue_button.toggled.connect(self.queue_toggled)
-        self.mute_button = _button(self._icons["volume"], "Mute")
+        self.lyrics_button = bar_button(icons.toggle_icon("lyrics"), "Lyrics", checkable=True)
+        self.lyrics_button.toggled.connect(self.lyrics_toggled)
+        self.mini_button = bar_button(
+            icons.icon("mini_player", 20, icons.DIM, hover=icons.NORMAL), "Mini player (Ctrl+M)"
+        )
+        self.mini_button.clicked.connect(self.mini_player_clicked)
+        self.mute_button = bar_button(self._icons["volume"], "Mute")
         self.mute_button.clicked.connect(self._toggle_mute)
         self.volume = ClickSlider()
         self.volume.setRange(0, 100)
@@ -291,7 +299,9 @@ class NowPlayingBar(QWidget):
         right_row.addStretch(1)
         right_row.addWidget(self.quality)
         right_row.addSpacing(6)
+        right_row.addWidget(self.lyrics_button)
         right_row.addWidget(self.queue_button)
+        right_row.addWidget(self.mini_button)
         right_row.addWidget(self.mute_button)
         right_row.addWidget(self.volume)
 
@@ -356,10 +366,12 @@ class NowPlayingBar(QWidget):
         )
         self.repeat_button.setToolTip(_REPEAT_TIPS[repeat])
 
-    def set_queue_visible(self, visible: bool) -> None:
-        self.queue_button.blockSignals(True)
-        self.queue_button.setChecked(visible)
-        self.queue_button.blockSignals(False)
+    def set_side_panel(self, name: str | None) -> None:
+        """Which of the queue and lyrics buttons is on (both off: no side panel)."""
+        for button, panel in ((self.queue_button, "queue"), (self.lyrics_button, "lyrics")):
+            button.blockSignals(True)
+            button.setChecked(name == panel)
+            button.blockSignals(False)
 
     def set_volume(self, volume: float) -> None:
         self.volume.blockSignals(True)

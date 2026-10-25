@@ -23,16 +23,20 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from typing import Any, BinaryIO
 
-from ytm_worker import jsruntime
+from ytm_worker import jsruntime, update
 from ytm_worker.jsruntime import JsRuntime
 from ytm_worker.protocol import ApiErrorKind, ErrorKind, Priority, decode, encode
 from ytm_worker.resolve import ResolveError, Resolver, ResolverConfig
-from ytm_worker.ytm import ServiceError, YtmService
+from ytm_worker.ytm import ServiceError, YtmService, classify
 
 log = logging.getLogger("ytm_worker")
 
 RESOLVE_THREADS = 2
 API_THREADS = 2
+# API methods that don't talk to YouTube Music, so they don't need a ytmusicapi client.
+LOCAL_OPERATIONS: dict[str, Callable[[dict[str, Any]], Any]] = {
+    "update_ytdlp": update.install_latest,
+}
 DEFAULT_IDLE_TIMEOUT = 30.0
 
 
@@ -146,6 +150,7 @@ class Worker:
                 self._api_busy += 1
             self._api_pool.submit(self._run_api, message)
         elif op == "shutdown":
+            self._send({"op": "bye"})  # a planned exit, e.g. to load an updated yt-dlp
             return False
         else:
             log.warning("unknown op %r", op)
@@ -307,13 +312,11 @@ class Worker:
     def _run_api(self, message: dict[str, Any]) -> None:
         request_id = int(message.get("id", 0))
         try:
-            result = self.service.call(
-                str(message["method"]),
-                dict(message.get("args") or {}),
-                background=bool(message.get("background")),
-                headers=message.get("headers"),
-            )
-            reply: dict[str, Any] = {"op": "api_result", "id": request_id, "result": result}
+            reply: dict[str, Any] = {
+                "op": "api_result",
+                "id": request_id,
+                "result": self._call(message),
+            }
         except ServiceError as exc:
             reply = {
                 "op": "api_error",
@@ -333,6 +336,22 @@ class Worker:
         with self._cond:
             self._api_busy -= 1
         self._touch()
+
+    def _call(self, message: dict[str, Any]) -> Any:
+        method = str(message["method"])
+        args = dict(message.get("args") or {})
+        local = LOCAL_OPERATIONS.get(method)
+        if local is None:
+            return self.service.call(
+                method,
+                args,
+                background=bool(message.get("background")),
+                headers=message.get("headers"),
+            )
+        try:
+            return local(args)
+        except Exception as exc:
+            raise classify(exc) from exc
 
     def _send(self, message: dict[str, Any]) -> None:
         data = encode(message)

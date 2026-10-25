@@ -73,7 +73,15 @@ class FakeClient:
 
     def get_song(self, videoId: str) -> dict[str, Any]:
         url = f"https://music.youtube.com/api/stats/playback?docid={videoId}&client=me"
-        return {"playbackTracking": {"videostatsPlaybackUrl": {"baseUrl": url}}}
+        formats = [
+            {"itag": 251, "mimeType": 'audio/webm; codecs="opus"', "loudnessDb": 2.26},
+            {"itag": 140, "mimeType": 'audio/mp4; codecs="mp4a.40.2"', "loudnessDb": 2.25},
+            {"itag": 18, "mimeType": "video/mp4"},
+        ]
+        return {
+            "playbackTracking": {"videostatsPlaybackUrl": {"baseUrl": url}},
+            "streamingData": {"adaptiveFormats": formats if videoId != "quiet" else []},
+        }
 
     def add_history_item(self, song: dict[str, Any]) -> Any:
         self.history_pings = [*getattr(self, "history_pings", []), song]
@@ -116,6 +124,12 @@ def test_calls_return_compact_json(service: tuple[YtmService, list[Any]]) -> Non
     radio = svc.call("radio", {"video_id": "seed"})
     assert [t["v"] for t in radio] == ["seed", "r0", "r1"]
     assert radio[0]["d"] == 187
+
+
+def test_loudness(service: tuple[YtmService, list[Any]]) -> None:
+    svc, _ = service
+    assert svc.call("loudness", {"video_id": "loud"}) == 2.26
+    assert svc.call("loudness", {"video_id": "quiet"}) is None  # no audio formats listed
 
 
 def test_history_ping_uses_the_same_client_as_its_url(

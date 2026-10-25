@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from ytm_lite import APP_NAME
-from ytm_lite.app.config import Settings, app_paths, app_root
+from ytm_lite.app.config import Settings, app_paths, app_root, is_frozen
 from ytm_lite.app.log import install_excepthooks, setup_logging
 
 _T0 = time.perf_counter()
@@ -93,6 +93,11 @@ def run(argv: Sequence[str] | None = None) -> int:
         else:
             log.error("%s not found; run tools/fetch_libmpv.py", LIBMPV_DLL)
 
+    if sys.platform == "win32" and is_frozen():
+        from ytm_lite.integrations.windows_shortcut import set_process_app_id
+
+        set_process_app_id()  # before any window: Windows groups and names the app by it
+
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
@@ -112,9 +117,11 @@ def run(argv: Sequence[str] | None = None) -> int:
     from ytm_lite.app.session import Session
     from ytm_lite.app.single_instance import SingleInstance, server_name
     from ytm_lite.app.state import SavedQueue, StateKeeper
+    from ytm_lite.app.updater import YtDlpUpdater
     from ytm_lite.app.worker_client import WorkerProcess
     from ytm_lite.app.workers import Priority as WorkPriority
     from ytm_lite.app.workers import Workers
+    from ytm_lite.integrations.hotkeys import Hotkeys
     from ytm_lite.integrations.media_controls import MediaBridge, create_media_controls
     from ytm_lite.ui.shell import Shell, apply_window_icon
     from ytm_lite.ui.theme import apply_theme
@@ -155,10 +162,17 @@ def run(argv: Sequence[str] | None = None) -> int:
     saved = keeper.load_state()
     if saved.volume is not None:
         player.set_volume(saved.volume)
+    player.set_audio_device(settings.audio_device)
+    controller.set_normalization(settings.normalize)
     services = Services(
         paths, settings, workers, api, resolver, session, library, liked, images, controller
     )
-    shell = Shell(services, keeper, saved.window)
+    hotkeys = Hotkeys(app)
+    unregistered = hotkeys.apply(settings.hotkeys)
+    if unregistered:
+        log.warning("hotkeys not available: %s", ", ".join(sorted(unregistered)))
+    updater = YtDlpUpdater(paths.cache / "updates", worker, api, workers, app)
+    shell = Shell(services, keeper, saved.window, hotkeys=hotkeys, updater=updater)
     instance.command_received.connect(shell.handle_command)
     install_excepthooks(shell.report_error)
     media = create_media_controls(app)
@@ -179,6 +193,15 @@ def run(argv: Sequence[str] | None = None) -> int:
         )
 
     controller.radio_wanted.connect(fetch_radio)
+
+    def fetch_loudness(video_id: str) -> None:
+        workers.submit(
+            lambda: api.loudness(video_id),
+            on_done=lambda db: controller.set_loudness(video_id, db),
+            on_error=lambda _error: controller.set_loudness(video_id, None),
+        )
+
+    controller.loudness_wanted.connect(fetch_loudness)
 
     def play_when_loaded(playlist: Playlist) -> None:
         if playlist.id == args.autoplay_playlist and playlist.complete:
@@ -238,6 +261,11 @@ def run(argv: Sequence[str] | None = None) -> int:
             window.maybe_prompt_sign_in()
         if args.autoplay:
             controller.play_tracks(TEST_TRACKS)
+        if sys.platform == "win32" and is_frozen():
+            from ytm_lite.integrations.windows_shortcut import ensure_start_menu_shortcut
+
+            exe = Path(sys.argv[0]).resolve()
+            workers.submit(lambda: ensure_start_menu_shortcut(exe, icon=exe), pool="io")
 
     QTimer.singleShot(0, first_paint)
     if args.tray_after is not None:
@@ -249,6 +277,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     exit_code = app.exec()
     del media_bridge
     media.close()
+    hotkeys.close()
     final = keeper.stop()  # before mpv goes away, so the position is known
     controller.shutdown()
     worker.shutdown()

@@ -1,5 +1,5 @@
-"""Main window: rounded panels (sidebar | pages | queue) on a black canvas, the
-now-playing bar along the bottom, and a banner on top when something needs you.
+"""Main window: rounded panels (sidebar | pages | queue or lyrics) on a black canvas,
+the now-playing bar along the bottom, and a banner on top when something needs you.
 
 In tray mode the window is destroyed and later rebuilt, so everything it connects to a
 long-lived object (controller, library, session...) is a bound method, which Qt drops
@@ -48,13 +48,14 @@ from ytm_lite.app.play_queue import QueueEntry, RepeatMode
 from ytm_lite.app.services import Services
 from ytm_lite.ui.debug_overlay import DebugOverlay
 from ytm_lite.ui.login_dialog import LoginDialog
+from ytm_lite.ui.lyrics_panel import LyricsPanel
 from ytm_lite.ui.notify import Banner, Toast
 from ytm_lite.ui.now_playing_bar import NowPlayingBar
 from ytm_lite.ui.pages.artist_page import ArtistPage
 from ytm_lite.ui.pages.collection_page import CollectionPage
+from ytm_lite.ui.pages.home_page import HomePage
 from ytm_lite.ui.pages.playlist_page import PlaylistPage
 from ytm_lite.ui.pages.search_page import SearchPage
-from ytm_lite.ui.pages.signed_out_page import SignedOutPage
 from ytm_lite.ui.queue_panel import QueuePanel
 from ytm_lite.ui.sidebar import Route, Sidebar
 from ytm_lite.ui.theme import GAP
@@ -71,23 +72,31 @@ _LOAD_ERRORS = {
 class MainWindow(QMainWindow):
     error_reported = Signal(str)  # thread-safe way to show an error toast
     closed = Signal()  # the user closed the window: the shell decides between tray and quit
+    settings_requested = Signal()
+    update_requested = Signal()  # "Check for yt-dlp update" on the banner
+    mini_player_requested = Signal()
 
     POLL_MS = 250
     MAX_PAGES = 3  # pages kept alive besides the current one are rebuilt on demand
     MAX_HISTORY = 50
-    QUEUE_WIDTH = 340
+    SIDE_WIDTH = 340
 
     def __init__(self, services: Services, initial_route: Route | None = None) -> None:
         super().__init__()
         self.s = services
         self._last_gap: float | None = None
+        self._stream: Any = None  # StreamInfo of the current song, for the overlay
         self._pages: OrderedDict[Route, QWidget] = OrderedDict()
         self._route: Route | None = None
         self._history: list[Route] = []
         self._history_index = -1
-        self._queue_panel: QueuePanel | None = None  # created when first shown
-        self._queue_frame: Panel | None = None
-        self._queue_width = self.QUEUE_WIDTH
+        self._side: str | None = None  # "queue", "lyrics" or None
+        self._side_stack: QStackedWidget | None = None  # created when first shown
+        self._side_frame: Panel | None = None
+        self._queue_panel: QueuePanel | None = None
+        self._lyrics_panel: LyricsPanel | None = None
+        self._side_width = self.SIDE_WIDTH
+        self._banner_action: Callable[[], object] | None = None
         self.setWindowTitle("ytm-lite")
         self.resize(1240, 800)
 
@@ -98,12 +107,13 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(GAP, GAP, GAP, 0)
         layout.setSpacing(GAP)
         self.banner = Banner()
-        self.banner.action_clicked.connect(self.show_sign_in)
+        self.banner.action_clicked.connect(self._banner_clicked)
         self.sidebar = Sidebar(services.images)
         self.stack = QStackedWidget()
         self.top_bar = TopBar(SearchBox(services.workers, services.api))
         self.top_bar.back_clicked.connect(self.go_back)
         self.top_bar.forward_clicked.connect(self.go_forward)
+        self.top_bar.settings_clicked.connect(self.settings_requested)
         self.top_bar.search.search_requested.connect(self._search)
         self.content = ContentPanel(self.top_bar, self.stack)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -135,10 +145,13 @@ class MainWindow(QMainWindow):
         self.bar.repeat_clicked.connect(self._cycle_repeat)
         self.bar.like_clicked.connect(self._toggle_like)
         self.bar.queue_toggled.connect(self.set_queue_visible)
+        self.bar.lyrics_toggled.connect(self._lyrics_toggled)
+        self.bar.mini_player_clicked.connect(self.mini_player_requested)
         controller.current_changed.connect(self._on_current_changed)
         controller.modes_changed.connect(self._on_modes_changed)
         controller.state_changed.connect(self.bar.set_state)
         controller.stream_changed.connect(self.bar.set_stream)
+        controller.stream_changed.connect(self._on_stream)
         controller.notice.connect(self.toast.show_message)
         controller.extraction_failing.connect(self._extraction_failing)
         controller.transition_measured.connect(self._on_transition)
@@ -178,6 +191,8 @@ class MainWindow(QMainWindow):
             ("Alt+Right", self.go_forward),
             ("Ctrl+Q", QApplication.quit),
             ("Ctrl+Shift+D", self._toggle_overlay),
+            ("Ctrl+,", self.settings_requested.emit),
+            ("Ctrl+M", self.mini_player_requested.emit),
         )
         for keys, slot in shortcuts:
             QShortcut(QKeySequence(keys), self).activated.connect(slot)
@@ -290,6 +305,11 @@ class MainWindow(QMainWindow):
             api = s.api
             self._load(artist_page, lambda: api.artist(channel_id), artist_page.set_artist)
             return artist_page
+        if kind == "home":
+            home = HomePage(s.workers, s.api, s.images, s.liked, s.controller, self.navigate)
+            home.song_requested.connect(s.controller.start_radio)
+            home.item_activated.connect(self._open_item)
+            return home
         if kind == "search":
             search = SearchPage(
                 route[1], s.workers, s.api, s.images, s.liked, s.controller, self.navigate
@@ -297,18 +317,13 @@ class MainWindow(QMainWindow):
             search.song_requested.connect(s.controller.start_radio)
             search.item_activated.connect(self._open_item)
             return search
-        if kind in ("albums", "artists"):
-            albums = kind == "albums"
-            collection = CollectionPage(
-                "Albums" if albums else "Artists", s.images, round_covers=not albums
-            )
-            collection.set_items(s.library.albums if albums else s.library.artists)
-            collection.activated.connect(self._open_item)
-            return collection
-        signed_out = SignedOutPage(s.images, s.liked, s.controller)
-        signed_out.sign_in_clicked.connect(self.show_sign_in)
-        signed_out.play_requested.connect(self._play)
-        return signed_out
+        albums = kind == "albums"
+        collection = CollectionPage(
+            "Albums" if albums else "Artists", s.images, round_covers=not albums
+        )
+        collection.set_items(s.library.albums if albums else s.library.artists)
+        collection.activated.connect(self._open_item)
+        return collection
 
     def _connect_tracks(self, page: PlaylistPage | ArtistPage) -> None:
         page.play_requested.connect(self._play)
@@ -386,6 +401,8 @@ class MainWindow(QMainWindow):
     def _on_current_changed(self, entry: QueueEntry | None) -> None:
         self.bar.set_entry(entry)
         self._update_like()
+        if self._lyrics_panel is not None:
+            self._lyrics_panel.set_track(entry.track if entry is not None else None)
 
     def _on_modes_changed(self) -> None:
         controller, settings = self.s.controller, self.s.settings
@@ -413,40 +430,68 @@ class MainWindow(QMainWindow):
         entry = self.s.controller.queue.current()
         self.bar.set_liked(entry is not None and self.s.liked.is_liked(entry.track.video_id))
 
-    def set_queue_visible(self, visible: bool) -> None:
-        frame = self._queue_frame
-        if visible and frame is None:
-            self._queue_panel = QueuePanel(self.s.controller, self.s.images)
-            frame = self._queue_frame = Panel(self._queue_panel)
+    def set_side_panel(self, name: str | None) -> None:
+        """Show the queue or the lyrics beside the page; None hides the side panel. Each
+        is created the first time it's shown."""
+        stack, frame = self._side_stack, self._side_frame
+        if name is not None and (stack is None or frame is None):
+            stack = self._side_stack = QStackedWidget()
+            frame = self._side_frame = Panel(stack)
             frame.setMinimumWidth(260)
             frame.hide()
             self.splitter.addWidget(frame)
             self.splitter.setStretchFactor(2, 0)
+        if stack is not None and name == "queue":
+            if self._queue_panel is None:
+                self._queue_panel = QueuePanel(self.s.controller, self.s.images)
+                stack.addWidget(self._queue_panel)
+            stack.setCurrentWidget(self._queue_panel)
+        elif stack is not None and name == "lyrics":
+            if self._lyrics_panel is None:
+                self._lyrics_panel = LyricsPanel(self.s.workers, self.s.api)
+                self._lyrics_panel.seek_requested.connect(self.s.controller.seek)
+                entry = self.s.controller.queue.current()
+                self._lyrics_panel.set_track(entry.track if entry is not None else None)
+                stack.addWidget(self._lyrics_panel)
+            stack.setCurrentWidget(self._lyrics_panel)
+        visible = name is not None
         if frame is not None and visible != frame.isVisibleTo(self):
             sizes = self.splitter.sizes()
             if visible:
                 frame.show()
-                width = min(self._queue_width, max(260, sizes[1] // 2))
+                width = min(self._side_width, max(260, sizes[1] // 2))
                 self.splitter.setSizes([sizes[0], max(200, sizes[1] - width), width])
             else:
-                self._queue_width = sizes[2]
+                self._side_width = sizes[2]
                 frame.hide()
-        self.bar.set_queue_visible(visible)
+        self._side = name
+        self.bar.set_side_panel(name)
+        self._tick()
+
+    def set_queue_visible(self, visible: bool) -> None:
+        self.set_side_panel("queue" if visible else None)
+
+    def _lyrics_toggled(self, on: bool) -> None:
+        self.set_side_panel("lyrics" if on else None)
+
+    def side_panel(self) -> str | None:
+        return self._side
 
     def queue_visible(self) -> bool:
-        return self._queue_frame is not None and self._queue_frame.isVisibleTo(self)
+        return self._side == "queue"
 
     # -- window layout, saved with the playback session ---------------------------------
 
     def ui_state(self) -> dict[str, Any]:
         sizes = self.splitter.sizes()
-        if self.queue_visible() and len(sizes) > 2:
-            self._queue_width = sizes[2]
+        if self._side is not None and len(sizes) > 2:
+            self._side_width = sizes[2]
         return {
             "geometry": bytes(self.saveGeometry().toBase64().data()).decode("ascii"),
             "sidebar": sizes[0],
             "queue": self.queue_visible(),
-            "queue_width": self._queue_width,
+            "panel": self._side,
+            "queue_width": self._side_width,
         }
 
     def restore_ui_state(self, state: dict[str, Any]) -> None:
@@ -459,9 +504,12 @@ class MainWindow(QMainWindow):
             self.splitter.setSizes([sidebar, max(200, total - sidebar)])
         width = state.get("queue_width")
         if isinstance(width, int) and 260 <= width <= 1000:
-            self._queue_width = width
-        if state.get("queue") is True:
-            self.set_queue_visible(True)
+            self._side_width = width
+        panel = state.get("panel")
+        if panel in ("queue", "lyrics"):
+            self.set_side_panel(str(panel))
+        elif state.get("queue") is True:  # saved before the lyrics panel existed
+            self.set_side_panel("queue")
 
     # -- session -----------------------------------------------------------------------
 
@@ -475,7 +523,7 @@ class MainWindow(QMainWindow):
         self._drop_pages()
         library_only = ("liked", "albums", "artists")
         if route is None or (not session.signed_in and route[0] in library_only):
-            route = ("liked",) if session.signed_in else ("signed_out",)
+            route = ("home",)
         self.navigate(route)
 
     def _on_account(self, account: Account | None) -> None:
@@ -483,10 +531,24 @@ class MainWindow(QMainWindow):
             self.sidebar.set_account(account.name)
 
     def _session_expired(self) -> None:
+        self._banner_action = self.show_sign_in
         self.banner.show_message("Your YouTube Music session has expired.", "Sign in again")
 
     def _extraction_failing(self) -> None:
-        self.banner.show_message("Stream extraction keeps failing — try updating yt-dlp.")
+        self._banner_action = self.update_requested.emit
+        self.banner.show_message(
+            "Songs keep failing to load: YouTube may have changed something.",
+            "Check for yt-dlp update",
+        )
+
+    def _banner_clicked(self) -> None:
+        if self._banner_action is not None:
+            self._banner_action()
+
+    def ytdlp_updated(self, version: str) -> None:
+        if self._banner_action == self.update_requested.emit:
+            self.banner.hide()
+        self.toast.show_message(f"Updated to yt-dlp {version}.")
 
     def show_sign_in(self) -> None:
         dialog = LoginDialog(self.s.workers, self.s.api, self)
@@ -528,6 +590,9 @@ class MainWindow(QMainWindow):
     def _on_transition(self, gap_ms: float) -> None:
         self._last_gap = gap_ms
 
+    def _on_stream(self, stream: Any) -> None:
+        self._stream = stream
+
     def _update_polling(self) -> None:
         if self.isVisible() and not self.isMinimized():
             if not self._poll.isActive():
@@ -538,7 +603,10 @@ class MainWindow(QMainWindow):
 
     def _tick(self) -> None:
         controller = self.s.controller
-        self.bar.set_position(controller.position(), controller.duration())
+        position = controller.position()
+        self.bar.set_position(position, controller.duration())
+        if self._side == "lyrics" and self._lyrics_panel is not None:
+            self._lyrics_panel.set_position(position)
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -575,12 +643,26 @@ class MainWindow(QMainWindow):
             "resolver": "running" if s.resolver.is_running() else "stopped",
             "js runtime": f"{runtime.get('name', '–')} {runtime.get('version', '')}".strip(),
             "yt-dlp": (worker.get("versions") or {}).get("yt-dlp", "–"),
-            "covers": f"{count} in memory, {size / 1e6:.1f} MB",
+            "covers": (
+                f"{count} in memory, {size / 1e6:.1f} MB; "
+                f"{s.images.disk_usage() / 1e6:.1f} MB on disk"
+            ),
+            "normalize": s.settings.normalize,
             "pages": f"{len(self._pages)} open, {len(self._history)} in history",
             "last gap": "–" if self._last_gap is None else f"{self._last_gap:.0f} ms",
         }
+        stream = self._stream
+        if stream is not None:
+            info["stream"] = (
+                f"format {stream.format_id}, {stream.quality_text}"
+                f"{' (fast start)' if stream.fast else ''}"
+            )
         if player_stats.get("active"):
             cache = player_stats.get("cache_bytes")
             info["demux cache"] = "–" if cache is None else f"{cache / 1e6:.1f} MB"
             info["audio"] = f"{player_stats.get('codec')} @ {player_stats.get('samplerate')} Hz"
+            gain = player_stats.get("gain")
+            info["gain"] = "–" if gain is None else f"{float(gain):+.2f} dB"
+            info["filters"] = player_stats.get("filters")
+            info["output"] = f"{player_stats.get('ao') or '–'} ({player_stats.get('device')})"
         return info

@@ -39,6 +39,7 @@ class ImageLoader(QObject):
         disk.setCacheDirectory(str(cache_dir / "images"))
         disk.setMaximumCacheSize(DISK_CACHE_BYTES)
         self._nam.setCache(disk)
+        self._disk = disk
         self._memory: OrderedDict[str, QPixmap] = OrderedDict()
         self._memory_bytes = 0
         self._in_flight: set[str] = set()
@@ -70,6 +71,9 @@ class ImageLoader(QObject):
 
     def memory_usage(self) -> tuple[int, int]:
         return len(self._memory), self._memory_bytes
+
+    def disk_usage(self) -> int:
+        return int(self._disk.cacheSize())
 
     def _pump(self) -> None:
         while self._queue and len(self._in_flight) < MAX_IN_FLIGHT:

@@ -3,18 +3,8 @@ round trip, search result sections."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 
-from ytm_lite.app.api import Api
-from ytm_lite.app.config import Paths, Settings
-from ytm_lite.app.images import ImageLoader
-from ytm_lite.app.library import Library
-from ytm_lite.app.library_cache import LibraryCache
-from ytm_lite.app.liked import LikedIndex
 from ytm_lite.app.models import (
     AlbumSummary,
     ArtistRef,
@@ -24,62 +14,25 @@ from ytm_lite.app.models import (
     SearchResults,
     Track,
 )
-from ytm_lite.app.play_queue import PlayQueue
-from ytm_lite.app.playback import PlaybackController
-from ytm_lite.app.player import Player
-from ytm_lite.app.resolver import ResolverClient
-from ytm_lite.app.secrets import SecretStore
 from ytm_lite.app.services import Services
-from ytm_lite.app.session import Session
 from ytm_lite.app.state import StateKeeper
-from ytm_lite.app.worker_client import WorkerProcess
-from ytm_lite.app.workers import Workers
 from ytm_lite.ui.main_window import MainWindow
 from ytm_lite.ui.pages.search_page import result_rows
 from ytm_lite.ui.shell import Shell
 
 
-@pytest.fixture
-def services(qapp: QApplication, tmp_path: Path) -> Services:
-    """Signed out, nothing started: no worker process, no mpv, no network."""
-    paths = Paths(tmp_path / "config", tmp_path / "cache", tmp_path / "logs")
-    for folder in (paths.config, paths.cache, paths.logs):
-        folder.mkdir()
-    settings = Settings()
-    workers = Workers()
-    worker = WorkerProcess(paths.cache)
-    api = Api(worker)
-    resolver = ResolverClient(worker)
-    session = Session(SecretStore(paths.config / "auth.bin"), api, resolver, workers, settings)
-    liked = LikedIndex(api, workers)
-    library = Library(api, workers, LibraryCache(paths.cache / "library"), liked, session)
-    controller = PlaybackController(PlayQueue(), resolver, Player())
-    return Services(
-        paths,
-        settings,
-        workers,
-        api,
-        resolver,
-        session,
-        library,
-        liked,
-        ImageLoader(paths.cache),
-        controller,
-    )
-
-
 def test_back_and_forward(services: Services, qtbot: QtBot) -> None:
     window = MainWindow(services)
     qtbot.addWidget(window)
-    assert window.current_route() == ("signed_out",)
+    assert window.current_route() == ("home",)
     window.navigate(("albums",))
     window.navigate(("artists",))
     window.go_back()
     assert window.current_route() == ("albums",)
     window.go_back()
-    assert window.current_route() == ("signed_out",)
+    assert window.current_route() == ("home",)
     window.go_back()  # nothing further back
-    assert window.current_route() == ("signed_out",)
+    assert window.current_route() == ("home",)
     assert not window.top_bar.back.isEnabled() and window.top_bar.forward.isEnabled()
     window.go_forward()
     assert window.current_route() == ("albums",)

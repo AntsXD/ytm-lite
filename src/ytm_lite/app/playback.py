@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from enum import StrEnum
 from typing import NamedTuple
@@ -45,6 +46,13 @@ class _Loaded(NamedTuple):
     stream: StreamInfo
 
 
+def normalization_gain(loudness_db: float | None) -> float:
+    """What YouTube's player does with a song's loudness (dB against its reference level,
+    "content loudness" in Stats for nerds): loud songs are turned down by that much,
+    quieter ones are left as they are."""
+    return -loudness_db if loudness_db is not None and loudness_db > 0 else 0.0
+
+
 def _queued_text(tracks: Sequence[Track], next_up: bool) -> str:
     what = f"“{tracks[0].title}”" if len(tracks) == 1 else f"{len(tracks)} songs"
     return f"{what} will play next" if next_up else f"Added {what} to the queue"
@@ -57,6 +65,7 @@ class PlaybackController(QObject):
     state_changed = Signal(str)  # PlaybackState value
     stream_changed = Signal(object)  # StreamInfo | None for the current entry
     radio_wanted = Signal(str)  # seed video id; answer with add_radio() or radio_failed()
+    loudness_wanted = Signal(str)  # video id; answer with set_loudness()
     notice = Signal(str)  # short message for the user
     extraction_failing = Signal()  # repeated extraction errors: yt-dlp likely needs an update
     transition_measured = Signal(float)  # ms from one track ending to the next playing
@@ -65,6 +74,7 @@ class PlaybackController(QObject):
     MAX_EXTRACTION_FAILURES = 3
     RESTART_THRESHOLD = 3.0  # Previous restarts the track when past this many seconds
     RADIO_THRESHOLD = 2  # fetch radio suggestions when this few tracks are left
+    LOUDNESS_KEPT = 256
 
     def __init__(
         self,
@@ -96,6 +106,8 @@ class PlaybackController(QObject):
         self._radio_queue = False  # "Start radio": suggestions keep coming with autoplay off
         self._radio_seed: str | None = None  # suggestions being fetched for this seed
         self._radio_spent: set[str] = set()  # seeds that brought nothing new
+        self.normalize = "youtube"  # Settings.normalize
+        self._loudness: OrderedDict[str, float | None] = OrderedDict()  # video id -> dB
 
         self._release_timer = QTimer(self)
         self._release_timer.setSingleShot(True)
@@ -412,6 +424,7 @@ class PlaybackController(QObject):
         self.current_changed.emit(entry)
         self.stream_changed.emit(None)
         video_id = entry.track.video_id
+        self._want_loudness(video_id)
         duration = entry.track.duration or 0
         if self.resolver.cached(video_id, valid_for=duration, best=not fast) is not None:
             self._start_waiting()
@@ -434,7 +447,9 @@ class PlaybackController(QObject):
             self._start_timer.start(int(wait * 1000) + 100)
             return
         entry_id = self.player.load(
-            stream.url, append=False, options=self._file_options(stream, self._resume_at)
+            stream.url,
+            append=False,
+            options=self._file_options(stream, video_id, self._resume_at),
         )
         self.player.set_paused(self._start_paused)
         self.player.set_loop_file(self.queue.repeat is RepeatMode.ONE)
@@ -443,9 +458,13 @@ class PlaybackController(QObject):
         self._resume_at = None
         self.stream_changed.emit(stream)
 
-    @staticmethod
-    def _file_options(stream: StreamInfo, start: float | None = None) -> dict[str, str]:
+    def _file_options(
+        self, stream: StreamInfo, video_id: str, start: float | None = None
+    ) -> dict[str, str]:
         options: dict[str, str] = {}
+        if self.normalize == "youtube":
+            gain = normalization_gain(self._loudness.get(video_id))
+            options["volume-gain"] = f"{gain:.2f}"
         user_agent = stream.http_headers.get("User-Agent")
         if user_agent:
             options["user-agent"] = user_agent
@@ -475,6 +494,7 @@ class PlaybackController(QObject):
         entry = self.queue.entry(want)
         if entry is None:
             return
+        self._want_loudness(entry.track.video_id)
         remaining = max(0.0, (self.duration() or 0.0) - (self.position() or 0.0))
         stream = self.resolver.cached(
             entry.track.video_id, valid_for=remaining + (entry.track.duration or 0), best=True
@@ -486,10 +506,42 @@ class PlaybackController(QObject):
         if wait > 0:
             self._arm_timer.start(int(wait * 1000) + 100)
             return
-        entry_id = self.player.load(stream.url, append=True, options=self._file_options(stream))
+        options = self._file_options(stream, entry.track.video_id)
+        entry_id = self.player.load(stream.url, append=True, options=options)
         self._armed = (want, entry_id)
         self._loaded[entry_id] = _Loaded(want, stream)
         log.info("armed next track %s (%s)", entry.track.video_id, stream.quality_text)
+
+    # -- normalization ----------------------------------------------------------------------
+
+    def set_normalization(self, mode: str) -> None:
+        """Settings.normalize; takes effect on the song playing now, too."""
+        self.normalize = mode
+        self.player.set_dynamic_normalization(mode == "dynamic")
+        entry = self.queue.current()
+        if entry is None or not self.player.active():
+            return
+        if mode == "youtube":
+            self._want_loudness(entry.track.video_id)
+            self.player.set_gain(normalization_gain(self._loudness.get(entry.track.video_id)))
+        else:
+            self.player.set_gain(0.0)
+
+    def set_loudness(self, video_id: str, loudness_db: float | None) -> None:
+        self._loudness[video_id] = loudness_db
+        self._loudness.move_to_end(video_id)
+        while len(self._loudness) > self.LOUDNESS_KEPT:
+            self._loudness.popitem(last=False)
+        if self.normalize == "youtube" and self._playing_uid is not None:
+            entry = self.queue.entry(self._playing_uid)
+            if entry is not None and entry.track.video_id == video_id:
+                # It started before this arrived (a song you just clicked): adjust it now.
+                self.player.set_gain(normalization_gain(loudness_db))
+
+    def _want_loudness(self, video_id: str) -> None:
+        if self.normalize == "youtube" and video_id not in self._loudness:
+            self._loudness[video_id] = None  # asked; the answer replaces it
+            self.loudness_wanted.emit(video_id)
 
     # -- resolver events ---------------------------------------------------------------
 
@@ -557,6 +609,9 @@ class PlaybackController(QObject):
             self.current_changed.emit(entry)
         self.player.playlist_clear()  # drop the finished entry; keeps this one
         self._loaded = {entry_id: loaded}
+        if self.normalize == "youtube":
+            # The loudness may have arrived after the file was handed to mpv.
+            self.player.set_gain(normalization_gain(self._loudness.get(entry.track.video_id)))
         self.stream_changed.emit(loaded.stream)
         self.reconcile()
         self._maybe_top_up()

@@ -139,6 +139,32 @@ class SearchResults:
     playlists: tuple[PlaylistSummary, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class HomeShelf:
+    title: str
+    items: tuple[SearchItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LyricLine:
+    start_ms: int
+    end_ms: int
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class Lyrics:
+    """Synced (`lines`, with times) when YouTube has them, otherwise plain `text`."""
+
+    text: str = ""
+    lines: tuple[LyricLine, ...] = ()
+    source: str | None = None  # "Source: LyricFind"
+
+    @property
+    def synced(self) -> bool:
+        return bool(self.lines)
+
+
 def format_duration(seconds: float | None) -> str:
     if seconds is None or seconds < 0:
         return "–:––"

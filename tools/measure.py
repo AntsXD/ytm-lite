@@ -11,7 +11,7 @@ Scenarios:
     startup     cold start to first paint, median of 5 runs
     tray        started in the tray (no window), nothing playing (RAM + CPU)
     tray-after  a big playlist shown in the window, then the window closed to the tray
-    idle        window open, nothing playing
+    idle        window open on Home, nothing playing
     playing     test tracks playing, in the tray (RAM + CPU)
     window      test tracks playing, window open, a big playlist on screen
     queue       that big playlist playing as the queue, queue panel open
@@ -211,12 +211,22 @@ def run_startup(runs: int = 5) -> Result:
     )
 
 
+def wait_for_worker_exit(root: psutil.Process, settle: float = 5, limit: float = 60) -> None:
+    """Until only the app's own process is left (the worker exits 15 s after its last
+    call: Home, a library refresh, a playlist), and at least `settle` seconds."""
+    t0 = time.time()
+    while time.time() - t0 < limit:
+        if time.time() - t0 >= settle and sample(root).processes == 1:
+            return
+        time.sleep(1)
+
+
 def run_window_idle(seconds: float) -> Result:
     proc, ready_file, _ = launch("idle")
     try:
         wait_ready(ready_file)
-        time.sleep(5)
         root = psutil.Process(proc.pid)
+        wait_for_worker_exit(root)  # Home loads at startup
         samples = []
         end = time.time() + seconds
         while time.time() < end:
@@ -251,15 +261,9 @@ def run_tray(seconds: float, playlist: str | None = None) -> Result:
         if not wait_for_log(scenario, "in the tray", TRAY_AFTER + 30):
             print("   (warning: never reached the tray)")
         root = psutil.Process(proc.pid)
-        # Steady once the working set has been trimmed (1.5 s in) and the worker, if a
-        # library refresh or the playlist started it, has exited (15 s after its last call).
-        t0 = time.time()
-        while True:
-            first = sample(root)
-            if (time.time() - t0 >= 5 and first.processes == 1) or time.time() - t0 > 60:
-                break
-            time.sleep(1)
-        samples = [first]
+        # Steady once the working set has been trimmed (1.5 s in) and the worker is gone.
+        wait_for_worker_exit(root)
+        samples = [sample(root)]
         steady_from = time.time()
         while time.time() < steady_from + seconds:
             time.sleep(1)

@@ -53,6 +53,20 @@ MPV_OPTIONS: dict[str, str] = {
     "volume-max": "100",
 }
 
+# Settings → Playback → "Even out loud and quiet parts": FFmpeg's dynamic normalizer.
+DYNAMIC_NORMALIZATION = "lavfi=[dynaudnorm]"
+# Enough of an mpv to list audio devices.
+BARE_OPTIONS = {
+    "vid": "no",
+    "video": "no",
+    "ytdl": "no",
+    "config": "no",
+    "load-scripts": "no",
+    "osc": "no",
+    "terminal": "no",
+    "idle": "yes",
+}
+
 _START_FILE = 6
 _END_FILE = 7
 _PLAYBACK_RESTART = 21
@@ -101,6 +115,8 @@ class Player(QObject):
         super().__init__(parent)
         self._mpv: Any = None
         self._volume = 70.0
+        self._audio_device = "auto"
+        self._dynamic_normalization = False
 
     # -- lifecycle --------------------------------------------------------------------
 
@@ -114,7 +130,12 @@ class Player(QObject):
             locale.setlocale(locale.LC_NUMERIC, "C")
             import mpv
 
-            all_options = {**MPV_OPTIONS, **tls_options()}
+            all_options = {
+                **MPV_OPTIONS,
+                **tls_options(),
+                "audio-device": self._audio_device,
+                "af": DYNAMIC_NORMALIZATION if self._dynamic_normalization else "",
+            }
             options = {key.replace("-", "_"): value for key, value in all_options.items()}
             instance = mpv.MPV(log_handler=self._on_log, loglevel="warn", **options)
             instance.volume = self._volume
@@ -178,6 +199,45 @@ class Player(QObject):
     def volume(self) -> float:
         return self._volume
 
+    def set_gain(self, db: float) -> None:
+        """The current file's gain (normalization); the next file brings its own."""
+        if self._mpv is not None:
+            self._set_property("volume-gain", db)
+
+    def set_dynamic_normalization(self, on: bool) -> None:
+        self._dynamic_normalization = on
+        if self._mpv is not None:
+            self._set_property("af", DYNAMIC_NORMALIZATION if on else "")
+
+    def set_audio_device(self, name: str) -> None:
+        self._audio_device = name or "auto"
+        if self._mpv is not None:
+            self._set_property("audio-device", self._audio_device)
+
+    def audio_devices(self) -> list[tuple[str, str]]:
+        """(name, description) of each audio output. Without a running mpv, a bare one
+        is made just to ask, and destroyed again."""
+        instance, temporary = self._mpv, None
+        if instance is None:
+            locale.setlocale(locale.LC_NUMERIC, "C")
+            import mpv
+
+            options = {key.replace("-", "_"): value for key, value in BARE_OPTIONS.items()}
+            instance = temporary = mpv.MPV(**options)
+        try:
+            devices = instance._get_property("audio-device-list") or []
+        except Exception:
+            log.debug("audio-device-list failed", exc_info=True)
+            devices = []
+        finally:
+            if temporary is not None:
+                temporary.terminate()
+        return [
+            (str(d.get("name", "")), str(d.get("description") or d.get("name", "")))
+            for d in devices
+            if isinstance(d, dict) and d.get("name")
+        ]
+
     def set_loop_file(self, loop: bool) -> None:
         if self._mpv is not None:
             self._mpv.loop_file = "inf" if loop else "no"
@@ -201,6 +261,9 @@ class Player(QObject):
             "codec": self._property("audio-codec-name"),
             "samplerate": params.get("samplerate"),
             "ao": self._property("current-ao"),
+            "device": self._property("audio-device"),
+            "gain": self._property("volume-gain"),
+            "filters": "dynaudnorm" if self._dynamic_normalization else "none",
         }
 
     def _command(self, *args: str) -> None:
@@ -210,6 +273,12 @@ class Player(QObject):
             self._mpv.command(*args)
         except Exception as exc:  # mpv rejects e.g. seeks while nothing is loaded
             log.debug("mpv command %s failed: %s", args[0], exc)
+
+    def _set_property(self, name: str, value: Any) -> None:
+        try:
+            self._mpv._set_property(name, value)
+        except Exception as exc:
+            log.warning("mpv rejected %s=%r: %s", name, value, exc)
 
     def _property(self, name: str) -> Any:
         if self._mpv is None:

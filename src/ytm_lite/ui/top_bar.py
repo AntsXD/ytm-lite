@@ -108,6 +108,7 @@ class SearchBox(QLineEdit):
 class TopBar(QWidget):
     back_clicked = Signal()
     forward_clicked = Signal()
+    settings_clicked = Signal()
 
     def __init__(self, search: SearchBox, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -124,8 +125,10 @@ class TopBar(QWidget):
 
         self.back = nav_button("back", "Back (Alt+←)")
         self.forward = nav_button("forward", "Forward (Alt+→)")
+        self.settings = nav_button("settings", "Settings (Ctrl+,)")
         self.back.clicked.connect(self.back_clicked)
         self.forward.clicked.connect(self.forward_clicked)
+        self.settings.clicked.connect(self.settings_clicked)
         row = QHBoxLayout(self)
         row.setContentsMargins(16, 12, 16, 4)
         row.setSpacing(8)
@@ -134,6 +137,7 @@ class TopBar(QWidget):
         row.addSpacing(8)
         row.addWidget(search, 1)
         row.addStretch(1)
+        row.addWidget(self.settings)
 
     def set_history(self, can_go_back: bool, can_go_forward: bool) -> None:
         self.back.setEnabled(can_go_back)

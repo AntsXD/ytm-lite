@@ -46,7 +46,9 @@ class WorkerError(Exception):
         self.kind = kind
 
 
-def worker_command() -> list[str]:
+def worker_command(packages: Path | None = None) -> list[str]:
+    """`packages`: a folder with an updated yt-dlp (see app.updater), used before the
+    bundled one."""
     if is_frozen():
         name = "pythonw.exe" if sys.platform == "win32" else "bin/python3"
         python = app_root() / "worker" / name
@@ -55,7 +57,10 @@ def worker_command() -> list[str]:
         pythonw = python.with_name("pythonw.exe")
         if sys.platform == "win32" and pythonw.exists():
             python = pythonw  # no console window
-    return [str(python), "-I", "-m", "ytm_worker"]
+    command = [str(python), "-I", "-m", "ytm_worker"]
+    if packages is not None:
+        command += ["--packages", str(packages)]
+    return command
 
 
 class WorkerProcess(QObject):
@@ -91,6 +96,14 @@ class WorkerProcess(QObject):
             self.config.update(fields)
             if changed and self._alive():
                 self._write(self.config)
+
+    def set_packages(self, folder: Path | None) -> None:
+        """Run the worker with `folder` (an updated yt-dlp) first on its path. A running
+        worker is replaced now: it says goodbye, and its unfinished work goes to the next."""
+        with self._lock:
+            self.command = worker_command(folder)
+            if self._alive():
+                self._write({"op": "shutdown"})
 
     def send(self, message: dict[str, Any]) -> None:
         """Send a message, starting the worker if needed."""

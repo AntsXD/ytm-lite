@@ -16,6 +16,9 @@ from ytm_lite.app.models import (
     Artist,
     ArtistRef,
     ArtistSummary,
+    HomeShelf,
+    LyricLine,
+    Lyrics,
     Playlist,
     PlaylistSummary,
     SearchItem,
@@ -215,6 +218,31 @@ def _item_from_json(d: Json) -> SearchItem:
     if kind == "artist":
         return artist_summary_from_json(data)
     return playlist_summary_from_json(data)
+
+
+def home_to_json(shelves: tuple[HomeShelf, ...]) -> list[Json]:
+    return [{"t": s.title, "i": [_item_to_json(i) for i in s.items]} for s in shelves]
+
+
+def home_from_json(d: list[Json] | None) -> tuple[HomeShelf, ...]:
+    return tuple(HomeShelf(s["t"], tuple(_item_from_json(i) for i in s["i"])) for s in d or ())
+
+
+def lyrics_to_json(lyrics: Lyrics | None) -> Json | None:
+    if lyrics is None:
+        return None
+    return {
+        "t": lyrics.text,
+        "l": [[line.start_ms, line.end_ms, line.text] for line in lyrics.lines],
+        "s": lyrics.source,
+    }
+
+
+def lyrics_from_json(d: Json | None) -> Lyrics | None:
+    if not d:
+        return None
+    lines = tuple(LyricLine(int(a), int(b), str(text)) for a, b, text in d.get("l") or ())
+    return Lyrics(text=d.get("t") or "", lines=lines, source=d.get("s"))
 
 
 def search_results_to_json(r: SearchResults) -> Json:

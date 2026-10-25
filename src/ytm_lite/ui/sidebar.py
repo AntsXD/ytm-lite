@@ -60,6 +60,7 @@ class SidebarItem:
 
 
 _HEIGHTS = {"nav": 40, "header": 40, "playlist": 52, "hint": 64}
+_HOME = SidebarItem("nav", "Home", ("home",), "home")
 _NAV = (
     SidebarItem("nav", "Liked music", ("liked",), "heart"),
     SidebarItem("nav", "Albums", ("albums",), "album"),
@@ -241,9 +242,10 @@ class Sidebar(QWidget):
     def _rebuild(self) -> None:
         current = self._current_route()
         if self._signed_in:
-            items = [*_NAV, SidebarItem("header", "Playlists"), *self._playlists]
+            items = [_HOME, *_NAV, SidebarItem("header", "Playlists"), *self._playlists]
         else:
-            items = [SidebarItem("hint", "Sign in to see your playlists, albums and artists here.")]
+            hint = "Sign in to see your playlists, albums and artists here."
+            items = [_HOME, SidebarItem("hint", hint)]
         self.view.selectionModel().blockSignals(True)
         self.model.set_items(items)
         if current is not None:

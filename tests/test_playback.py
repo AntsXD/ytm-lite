@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 from ytm_lite.app.models import Track
 from ytm_lite.app.play_queue import PlayQueue, RepeatMode
-from ytm_lite.app.playback import PlaybackController, PlaybackState
+from ytm_lite.app.playback import PlaybackController, PlaybackState, normalization_gain
 from ytm_lite.app.player import Player, tls_options
 from ytm_lite.app.resolver import ResolverClient, StreamInfo
 from ytm_lite.app.worker_client import WorkerProcess
@@ -40,6 +40,8 @@ class FakePlayer(Player):
         self.dur = 100.0
         self._paused = False
         self.loop = False
+        self.gains: list[float] = []
+        self.dynamic = False
 
     def active(self) -> bool:
         return self.is_active
@@ -82,6 +84,12 @@ class FakePlayer(Player):
 
     def set_loop_file(self, loop: bool) -> None:
         self.loop = loop
+
+    def set_gain(self, db: float) -> None:
+        self.gains.append(db)
+
+    def set_dynamic_normalization(self, on: bool) -> None:
+        self.dynamic = on
 
     def release(self) -> None:
         self.is_active = False
@@ -194,6 +202,7 @@ def rig(qapp: QApplication, tmp_path: Path) -> Rig:
     queue = PlayQueue()
     controller = PlaybackController(queue, resolver, player)
     controller.radio = False  # the radio tests turn it on
+    controller.normalize = "off"  # the normalization tests turn it on
     rig = Rig(controller, player, resolver, queue)
 
     def on_current(entry: Any) -> None:
@@ -626,3 +635,33 @@ def test_stream_certificates_are_checked() -> None:
     options = tls_options()
     assert options["tls-verify"] == "yes"
     assert Path(options["tls-ca-file"]).is_file()
+
+
+def test_normalization_follows_youtube_loudness(rig: Rig) -> None:
+    asked: list[str] = []
+    rig.controller.loudness_wanted.connect(asked.append)
+    rig.controller.normalize = "youtube"
+    rig.play("a", "b")
+    assert asked == ["a"]  # asked as soon as "a" was wanted, alongside its stream
+    rig.controller.set_loudness("a", 3.5)  # louder than YouTube's reference
+    rig.resolver.complete("a")
+    assert rig.player.loads[-1][2]["volume-gain"] == "-3.50"
+    rig.player.start(1)
+    assert rig.player.gains[-1] == -3.5  # re-applied as the file starts
+    assert "b" in asked  # the next song's loudness is fetched with its prefetch
+    rig.controller.set_loudness("b", -4.0)  # quieter than the reference: left alone
+    rig.resolver.complete("b")
+    assert rig.player.loads[-1][2]["volume-gain"] == "0.00"
+    # A late answer for the song that's playing adjusts it on the spot.
+    rig.controller.set_loudness("a", 6.0)
+    assert rig.player.gains[-1] == -6.0
+    rig.controller.set_normalization("dynamic")
+    assert rig.player.dynamic and rig.player.gains[-1] == 0.0
+    rig.controller.set_normalization("off")
+    assert not rig.player.dynamic
+
+
+def test_normalization_gain() -> None:
+    assert normalization_gain(2.26) == -2.26
+    assert normalization_gain(-10.6) == 0.0
+    assert normalization_gain(None) == 0.0

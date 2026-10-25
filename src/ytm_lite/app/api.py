@@ -18,6 +18,8 @@ from ytm_lite.app.models import (
     AlbumSummary,
     Artist,
     ArtistSummary,
+    HomeShelf,
+    Lyrics,
     Playlist,
     PlaylistSummary,
     SearchResults,
@@ -109,6 +111,11 @@ class Api:
         self._require_auth()
         self._call("add_history", {"video_id": video_id}, background=True)
 
+    def loudness(self, video_id: str) -> float | None:
+        """A song's loudness against YouTube's reference level, for normalization."""
+        value = self._call("loudness", {"video_id": video_id})
+        return float(value) if isinstance(value, (int, float)) else None
+
     def radio(self, video_id: str) -> list[Track]:
         """Radio suggestions seeded by a track (works signed out too); the seed itself
         usually comes back first."""
@@ -129,3 +136,14 @@ class Api:
 
     def artist(self, channel_id: str) -> Artist:
         return codec.artist_from_json(self._call("artist", {"channel_id": channel_id}))
+
+    def home(self) -> tuple[HomeShelf, ...]:
+        return codec.home_from_json(self._call("home"))
+
+    def lyrics(self, video_id: str) -> Lyrics | None:
+        return codec.lyrics_from_json(self._call("lyrics", {"video_id": video_id}))
+
+    def update_ytdlp(self, folder: str, current: str) -> dict[str, Any]:
+        """Download a newer yt-dlp into `folder` if PyPI has one (see ytm_worker.update)."""
+        result = self._call("update_ytdlp", {"folder": folder, "current": current})
+        return dict(result) if isinstance(result, dict) else {}

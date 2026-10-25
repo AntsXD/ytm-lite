@@ -1,7 +1,10 @@
-"""Entry point: ``python -I -m ytm_worker``. See ytm_worker.protocol for the wire format."""
+"""Entry point: ``python -I -m ytm_worker [--packages FOLDER]``. See ytm_worker.protocol
+for the wire format. FOLDER (an updated yt-dlp, see ytm_worker.update) goes first on the
+module path."""
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 
@@ -15,6 +18,11 @@ class _RedactingFormatter(logging.Formatter):
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(prog="ytm_worker")
+    parser.add_argument("--packages")
+    args = parser.parse_args()
+    if args.packages:
+        sys.path.insert(0, args.packages)  # before anything imports yt-dlp
     handler = logging.StreamHandler(sys.stderr)
     # The app parses "LEVEL name: message" lines from stderr into its own log.
     handler.setFormatter(_RedactingFormatter("%(levelname)s %(name)s: %(message)s"))

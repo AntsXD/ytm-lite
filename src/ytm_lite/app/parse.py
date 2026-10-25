@@ -18,6 +18,9 @@ from ytm_lite.app.models import (
     Artist,
     ArtistRef,
     ArtistSummary,
+    HomeShelf,
+    LyricLine,
+    Lyrics,
     Playlist,
     PlaylistSummary,
     SearchItem,
@@ -309,3 +312,49 @@ def search_results(raw: Any, query: str, filter_: str | None) -> SearchResults:
         artists=tuple(found_artists),
         playlists=tuple(playlists),
     )
+
+
+def home_item(raw: Any) -> SearchItem | None:
+    """A home-feed card: a song, an album, an artist or a playlist (no resultType here)."""
+    if not isinstance(raw, dict):
+        return None
+    browse_id = _str(raw.get("browseId")) or ""
+    if raw.get("videoId"):
+        return track(raw)
+    if browse_id.startswith("MPRE"):
+        return album_summary(raw)
+    if browse_id.startswith("UC"):
+        return artist_summary(raw)
+    summary = playlist_summary(raw)
+    if summary is not None and summary.author is None:
+        description = _str(raw.get("description"))
+        summary = dataclasses.replace(summary, author=description)
+    return summary
+
+
+def home(raw: Any) -> tuple[HomeShelf, ...]:
+    shelves = []
+    for shelf in raw if isinstance(raw, list) else ():
+        if not isinstance(shelf, dict):
+            continue
+        items = tuple(i for i in map(home_item, shelf.get("contents") or ()) if i is not None)
+        title = _str(shelf.get("title"))
+        if items and title:
+            shelves.append(HomeShelf(title, items))
+    return tuple(shelves)
+
+
+def lyrics(raw: Any) -> Lyrics | None:
+    """ytmusicapi's lyrics: timed (LyricLine objects) or plain text; None if there are none."""
+    if not isinstance(raw, dict):
+        return None
+    source = _str(raw.get("source"))
+    body = raw.get("lyrics")
+    if isinstance(body, str):
+        return Lyrics(text=body, source=source) if body.strip() else None
+    lines = tuple(
+        LyricLine(int(line.start_time), int(line.end_time), str(line.text))
+        for line in body or ()
+        if hasattr(line, "start_time") and hasattr(line, "text")
+    )
+    return Lyrics(lines=lines, source=source) if lines else None

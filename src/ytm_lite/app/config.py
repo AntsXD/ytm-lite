@@ -91,11 +91,31 @@ def read_json(path: Path) -> Any:
         return None
 
 
+NORMALIZE_MODES = ("youtube", "dynamic", "off")
+HOTKEY_ACTIONS = (
+    "play_pause",
+    "next",
+    "previous",
+    "like",
+    "toggle_window",
+    "mini_player",
+    "volume_up",
+    "volume_down",
+)
+
+
 @dataclass(slots=True)
 class Settings:
     close_to_tray: bool = True
     radio_autoplay: bool = True
     report_history: bool = True
+    # "youtube": each song's gain from YouTube's loudness data, as YouTube Music does;
+    # "dynamic": mpv's dynaudnorm filter (evens out quiet and loud parts); "off".
+    normalize: str = "youtube"
+    # An mpv audio device name (see Player.audio_devices), or "auto" for the default.
+    audio_device: str = "auto"
+    # Global hotkeys: HOTKEY_ACTIONS name -> key sequence in Qt's portable text form.
+    hotkeys: dict[str, str] = field(default_factory=dict)
     # The user chose "Continue without signing in": don't ask again at startup.
     skip_sign_in: bool = False
     # "auto", "deno", "node", or a path to a runtime executable.
@@ -114,7 +134,22 @@ class Settings:
             value = raw.get(f.name)
             if isinstance(value, type(getattr(defaults, f.name))):
                 values[f.name] = value
-        return cls(**values)
+        settings = cls(**values)
+        if settings.normalize not in NORMALIZE_MODES:
+            settings.normalize = defaults.normalize
+        settings.hotkeys = {
+            action: keys
+            for action, keys in settings.hotkeys.items()
+            if action in HOTKEY_ACTIONS and isinstance(keys, str) and keys
+        }
+        return settings
 
     def save(self, path: Path) -> None:
         atomic_write_text(path, json.dumps(asdict(self), indent=2))
+
+    def copy(self) -> Settings:
+        return Settings(**{f.name: _copied(getattr(self, f.name)) for f in fields(self)})
+
+
+def _copied(value: Any) -> Any:
+    return type(value)(value) if isinstance(value, (list, dict)) else value

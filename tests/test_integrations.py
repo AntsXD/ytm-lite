@@ -21,6 +21,7 @@ from ytm_lite.app.play_queue import PlayQueue, RepeatMode
 from ytm_lite.app.playback import PlaybackController, PlaybackState
 from ytm_lite.app.single_instance import SingleInstance, server_name
 from ytm_lite.integrations.base import MediaControls
+from ytm_lite.integrations.hotkeys import Hotkeys, to_native
 from ytm_lite.integrations.linux_mpris import NO_TRACK, metadata, track_path
 from ytm_lite.integrations.media_controls import MediaBridge, jpeg_bytes
 
@@ -129,10 +130,63 @@ def test_media_key_hotkeys(qapp: QApplication, qtbot: QtBot) -> None:
     controls.play_pause.connect(lambda: pressed.append("play_pause"))
     post = ctypes.windll.user32.PostMessageW
     post.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
-    post(controls._hwnd, WM_HOTKEY, 2, 0)  # what Windows sends for the Next key
-    post(controls._hwnd, WM_HOTKEY, 1, 0)
+    post(controls.keys.hwnd, WM_HOTKEY, 2, 0)  # what Windows sends for the Next key
+    post(controls.keys.hwnd, WM_HOTKEY, 1, 0)
     qtbot.waitUntil(lambda: pressed == ["next", "play_pause"], timeout=2000)
     controls.close()
+
+
+def test_key_sequences_to_windows_hotkeys() -> None:
+    assert to_native("Ctrl+Alt+P") == (0x2 | 0x1, 0x50)
+    assert to_native("Ctrl+Shift+Right") == (0x2 | 0x4, 0x27)
+    assert to_native("Meta+F9") == (0x8, 0x78)
+    assert to_native("F9") == (0, 0x78)  # F-keys and media keys may stand alone
+    assert to_native("Media Play") == (0, 0xB3)
+    assert to_native("Ctrl+Alt+7") == (0x3, 0x37)
+    assert to_native("P") is None  # would take P away from every other app
+    assert to_native("Shift+P") is None
+    assert to_native("Ctrl+A, Ctrl+B") is None  # chords can't be global hotkeys
+    assert to_native("") is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows hotkeys")
+def test_configured_hotkeys(qapp: QApplication, qtbot: QtBot) -> None:
+    import ctypes
+
+    from ytm_lite.integrations.windows_hotkeys import WM_HOTKEY
+
+    hotkeys = Hotkeys()
+    pressed: list[str] = []
+    hotkeys.triggered.connect(pressed.append)
+    problems = hotkeys.apply({"next": "Ctrl+Alt+Shift+F11", "like": "L", "bogus": "Ctrl+Alt+B"})
+    assert problems == {"like": "Add Ctrl, Alt or Win to this key"}
+    keys = hotkeys._keys
+    assert keys is not None
+    post = ctypes.windll.user32.PostMessageW
+    post.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+    post(keys.hwnd, WM_HOTKEY, 1, 0)
+    qtbot.waitUntil(lambda: pressed == ["next"], timeout=2000)
+    # A second registration of the same combination fails: that's another app's key now.
+    other = Hotkeys()
+    assert other.apply({"play_pause": "Ctrl+Alt+Shift+F11"}) == {
+        "play_pause": "Another app already uses this key"
+    }
+    assert hotkeys.apply({}) == {}  # cleared: now the other one can have it
+    assert other.apply({"play_pause": "Ctrl+Alt+Shift+F11"}) == {}
+    other.close()
+    hotkeys.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows shortcuts")
+def test_shortcut_carries_the_app_id(tmp_path: Path) -> None:
+    from ytm_lite.integrations.windows_shortcut import APP_ID, read_shortcut, write_shortcut
+
+    link = tmp_path / "Start Menu" / "ytm-lite.lnk"
+    target = Path(sys.executable)
+    write_shortcut(link, target, description="test", icon=target)
+    assert read_shortcut(link) == (target, APP_ID)
+    write_shortcut(link, target, app_id="Other.app")  # replaced in place
+    assert read_shortcut(link) == (target, "Other.app")
 
 
 def test_jpeg_bytes(qapp: QApplication) -> None:

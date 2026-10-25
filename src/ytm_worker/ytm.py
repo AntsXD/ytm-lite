@@ -33,6 +33,7 @@ LIBRARY_LIMIT = 5000  # "everything" for library lists
 RADIO_LIMIT = 25  # tracks per radio top-up (one request)
 SEARCH_LIMIT = 20  # results per search (ytmusicapi's default page)
 SUGGESTIONS = 8
+HOME_SHELVES = 8
 POOL_SIZE = 2
 
 
@@ -266,6 +267,33 @@ def _add_history(c: Any, args: dict[str, Any]) -> Any:
     return None
 
 
+def _loudness(c: Any, args: dict[str, Any]) -> Any:
+    """A song's loudness in dB against YouTube's reference level ("content loudness" in
+    Stats for nerds), from its audio formats; None if YouTube doesn't say."""
+    song = c.get_song(str(args["video_id"]))
+    formats = (song.get("streamingData") or {}).get("adaptiveFormats") or ()
+    values = [
+        float(f["loudnessDb"])
+        for f in formats
+        if str(f.get("mimeType", "")).startswith("audio")
+        and isinstance(f.get("loudnessDb"), (int, float))
+    ]
+    return max(values) if values else None
+
+
+def _home(c: Any, args: dict[str, Any]) -> Any:
+    return codec.home_to_json(parse.home(c.get_home(limit=int(args.get("limit") or HOME_SHELVES))))
+
+
+def _lyrics(c: Any, args: dict[str, Any]) -> Any:
+    """A song's lyrics: the watch playlist names the lyrics page, which may be timed."""
+    watch = c.get_watch_playlist(videoId=str(args["video_id"]), limit=1)
+    browse_id = watch.get("lyrics") if isinstance(watch, dict) else None
+    if not browse_id:
+        return None
+    return codec.lyrics_to_json(parse.lyrics(c.get_lyrics(browse_id, timestamps=True)))
+
+
 def _radio(c: Any, args: dict[str, Any]) -> Any:
     raw = c.get_watch_playlist(
         videoId=str(args["video_id"]), radio=True, limit=int(args.get("limit") or RADIO_LIMIT)
@@ -303,6 +331,9 @@ _OPERATIONS: dict[str, Callable[[Any, dict[str, Any]], Any]] = {
     "playlist": _playlist,
     "rate_song": _rate_song,
     "add_history": _add_history,
+    "loudness": _loudness,
+    "home": _home,
+    "lyrics": _lyrics,
     "radio": _radio,
     "search": _search,
     "search_suggestions": _search_suggestions,
