@@ -10,6 +10,7 @@ from PySide6.QtCore import (
     QModelIndex,
     QPersistentModelIndex,
     QRect,
+    QRectF,
     QSize,
     Qt,
     QTimer,
@@ -17,7 +18,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
-    QApplication,
+    QAbstractItemView,
     QLabel,
     QListView,
     QStyle,
@@ -29,8 +30,10 @@ from PySide6.QtWidgets import (
 
 from ytm_lite.app.images import ImageLoader
 from ytm_lite.app.models import AlbumSummary, ArtistSummary
+from ytm_lite.ui.theme import HOVER, SELECTED, TEXT, TEXT_DIM, font
+from ytm_lite.ui.widgets import draw_cover
 
-ROW_HEIGHT = 64
+ROW_HEIGHT = 68
 COVER = 52
 ITEM_ROLE = Qt.ItemDataRole.UserRole
 
@@ -76,53 +79,42 @@ class CollectionDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._images = images
         self._round = round_covers
+        self._title_font = font(weight=QFont.Weight.Medium)
 
     def sizeHint(self, option: QStyleOptionViewItem, index: AnyIndex) -> QSize:
         return QSize(200, ROW_HEIGHT)
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: AnyIndex) -> None:
         item: Item = index.data(ITEM_ROLE)
-        widget = option.widget
-        style = widget.style() if widget is not None else QApplication.style()
-        opt = QStyleOptionViewItem(option)
-        opt.text = ""
-        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
         rect: QRect = option.rect
-        cover = QRect(rect.left() + 12, rect.top() + (rect.height() - COVER) // 2, COVER, COVER)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if selected or hovered:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(SELECTED if selected else HOVER))
+            painter.drawRoundedRect(QRectF(rect.adjusted(0, 2, 0, -2)), 6, 6)
+        cover = QRect(rect.left() + 10, rect.top() + (rect.height() - COVER) // 2, COVER, COVER)
         pixmap = self._images.get(
             item.thumbnail, round(COVER * painter.device().devicePixelRatioF())
         )
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if pixmap is None:
-            painter.setBrush(QColor("#2a2a2a"))
-            painter.setPen(Qt.PenStyle.NoPen)
-            if self._round:
-                painter.drawEllipse(cover)
-            else:
-                painter.drawRect(cover)
-        else:
-            side = min(pixmap.width(), pixmap.height())
-            source = QRect((pixmap.width() - side) // 2, (pixmap.height() - side) // 2, side, side)
-            painter.drawPixmap(cover, pixmap, source)
+        draw_cover(painter, cover, pixmap, 4, round_=self._round)
         title, subtitle = _texts(item)
-        text_left = cover.right() + 14
-        width = rect.right() - text_left - 8
-        metrics = option.fontMetrics
-        bold = QFont(option.font)
-        bold.setBold(True)
-        painter.setFont(bold)
-        painter.setPen(option.palette.text().color())
-        title_rect = QRect(text_left, rect.top() + 12, width, metrics.height())
-        painter.drawText(
-            title_rect, 0, metrics.elidedText(title, Qt.TextElideMode.ElideRight, width)
+        left = cover.right() + 14
+        width = rect.right() - left - 8
+        half = rect.height() // 2
+        align = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        painter.setFont(self._title_font)
+        painter.setPen(QColor(TEXT))
+        title_text = painter.fontMetrics().elidedText(  # see track_table._text
+            title, Qt.TextElideMode.ElideRight, width
         )
+        painter.drawText(QRect(left, rect.top() + 14, width, half - 14), align, title_text)
         painter.setFont(option.font)
-        painter.setPen(QColor("#9a9a9a"))
-        sub_rect = QRect(text_left, title_rect.bottom() + 4, width, metrics.height())
-        painter.drawText(
-            sub_rect, 0, metrics.elidedText(subtitle, Qt.TextElideMode.ElideRight, width)
-        )
+        painter.setPen(QColor(TEXT_DIM))
+        sub_text = painter.fontMetrics().elidedText(subtitle, Qt.TextElideMode.ElideRight, width)
+        painter.drawText(QRect(left, rect.top() + half, width, half - 14), align, sub_text)
         painter.restore()
 
 
@@ -134,10 +126,7 @@ class CollectionPage(QWidget):
     ) -> None:
         super().__init__(parent)
         heading = QLabel(title)
-        font = QFont(heading.font())
-        font.setPointSizeF(font.pointSizeF() * 1.8)
-        font.setBold(True)
-        heading.setFont(font)
+        heading.setFont(font(26, QFont.Weight.Bold))
         self.status = QLabel("Loading…")
         self.status.setObjectName("Dim")
         self.model = CollectionModel(self)
@@ -147,11 +136,16 @@ class CollectionPage(QWidget):
         self.view.setUniformItemSizes(True)
         self.view.setFrameShape(QListView.Shape.NoFrame)
         self.view.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
-        self.view.activated.connect(lambda index: self.activated.emit(index.data(ITEM_ROLE)))
+        self.view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.view.setMouseTracking(True)
+        self.view.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.view.activated.connect(self._activated)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 0)
+        layout.setContentsMargins(24, 28, 12, 0)
+        layout.setSpacing(6)
         layout.addWidget(heading)
         layout.addWidget(self.status)
+        layout.addSpacing(8)
         layout.addWidget(self.view, 1)
 
         # Bound method, not a lambda: Qt drops the connection when the page is deleted.
@@ -163,6 +157,9 @@ class CollectionPage(QWidget):
 
     def _image_loaded(self, _key: str) -> None:
         self._repaint.start()
+
+    def _activated(self, index: QModelIndex) -> None:
+        self.activated.emit(index.data(ITEM_ROLE))
 
     def set_items(self, items: Sequence[Item] | None) -> None:
         if items is None:

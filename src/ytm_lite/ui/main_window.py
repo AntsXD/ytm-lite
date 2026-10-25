@@ -1,7 +1,9 @@
-"""Main window: sidebar | pages, now-playing bar at the bottom, banner on top."""
+"""Main window: rounded panels (sidebar | pages | queue) on a black canvas, the
+now-playing bar along the bottom, and a banner on top when something needs you."""
 
 from __future__ import annotations
 
+import random
 from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Any
@@ -18,7 +20,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ytm_lite.app.models import LIKED_SONGS_ID, Account, AlbumSummary, ArtistSummary, Playlist
+from ytm_lite.app.models import (
+    LIKED_SONGS_ID,
+    Account,
+    AlbumSummary,
+    ArtistSummary,
+    Playlist,
+    Track,
+)
 from ytm_lite.app.play_queue import QueueEntry, RepeatMode
 from ytm_lite.app.services import Services
 from ytm_lite.ui.debug_overlay import DebugOverlay
@@ -30,6 +39,8 @@ from ytm_lite.ui.pages.playlist_page import PlaylistPage
 from ytm_lite.ui.pages.signed_out_page import SignedOutPage
 from ytm_lite.ui.queue_panel import QueuePanel
 from ytm_lite.ui.sidebar import Route, Sidebar
+from ytm_lite.ui.theme import GAP
+from ytm_lite.ui.widgets import Panel
 
 _REPEAT_ORDER = (RepeatMode.OFF, RepeatMode.ALL, RepeatMode.ONE)
 
@@ -48,23 +59,28 @@ class MainWindow(QMainWindow):
         self._pages: OrderedDict[Route, QWidget] = OrderedDict()
         self._route: Route | None = None
         self._queue_panel: QueuePanel | None = None  # created when first shown
+        self._queue_frame: Panel | None = None
         self._queue_width = self.QUEUE_WIDTH
         self.setWindowTitle("ytm-lite")
-        self.resize(1200, 760)
+        self.resize(1240, 800)
 
         central = QWidget()
+        central.setObjectName("Canvas")
+        central.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(GAP, GAP, GAP, 0)
+        layout.setSpacing(GAP)
         self.banner = Banner()
         self.banner.action_clicked.connect(self.show_sign_in)
-        self.sidebar = Sidebar()
+        self.sidebar = Sidebar(services.images)
         self.stack = QStackedWidget()
+        self.content = Panel(self.stack)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.addWidget(self.sidebar)
-        self.splitter.addWidget(self.stack)
+        self.splitter.setHandleWidth(GAP)
+        self.splitter.addWidget(Panel(self.sidebar))
+        self.splitter.addWidget(self.content)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([230, 970])
+        self.splitter.setSizes([250, 990])
         self.splitter.setChildrenCollapsible(False)
         controller = services.controller
         self.bar = NowPlayingBar(services.images)
@@ -75,8 +91,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.overlay = DebugOverlay(self._overlay_info, central)
-        self.overlay.move(12, 12)
-        self.toast = Toast(central)
+        self.overlay.move(20, 20)
+        self.toast = Toast(self.content)
 
         # Playback
         self.bar.play_pause_clicked.connect(controller.toggle_pause)
@@ -168,9 +184,10 @@ class MainWindow(QMainWindow):
         kind = route[0]
         if kind in ("liked", "playlist"):
             playlist_id = LIKED_SONGS_ID if kind == "liked" else route[1]
-            title = "Liked Songs" if kind == "liked" else route[2]
+            title = "Liked music" if kind == "liked" else route[2]
             page = PlaylistPage(playlist_id, title, s.images, s.liked, s.controller)
             page.play_requested.connect(self._play)
+            page.shuffle_requested.connect(self._shuffle_play)
             known = s.library.open_playlist(playlist_id, title)
             if known is not None:
                 page.set_playlist(known)
@@ -201,6 +218,11 @@ class MainWindow(QMainWindow):
 
     def _play(self, tracks: Sequence[Any], row: int) -> None:
         self.s.controller.play_tracks(list(tracks), row)
+
+    def _shuffle_play(self, tracks: Sequence[Track]) -> None:
+        playable = [row for row, track in enumerate(tracks) if track.available]
+        if playable:
+            self.s.controller.play_tracks(list(tracks), random.choice(playable), shuffle=True)
 
     def _on_playlist(self, playlist: Playlist) -> None:
         for page in self._pages.values():
@@ -247,26 +269,27 @@ class MainWindow(QMainWindow):
         self.bar.set_liked(entry is not None and self.s.liked.is_liked(entry.track.video_id))
 
     def set_queue_visible(self, visible: bool) -> None:
-        panel = self._queue_panel
-        if visible and panel is None:
-            panel = self._queue_panel = QueuePanel(self.s.controller, self.s.images)
-            panel.setMinimumWidth(240)
-            panel.hide()
-            self.splitter.addWidget(panel)
+        frame = self._queue_frame
+        if visible and frame is None:
+            self._queue_panel = QueuePanel(self.s.controller, self.s.images)
+            frame = self._queue_frame = Panel(self._queue_panel)
+            frame.setMinimumWidth(260)
+            frame.hide()
+            self.splitter.addWidget(frame)
             self.splitter.setStretchFactor(2, 0)
-        if panel is not None and visible != panel.isVisibleTo(self):
+        if frame is not None and visible != frame.isVisibleTo(self):
             sizes = self.splitter.sizes()
             if visible:
-                panel.show()
-                width = min(self._queue_width, max(240, sizes[1] // 2))
+                frame.show()
+                width = min(self._queue_width, max(260, sizes[1] // 2))
                 self.splitter.setSizes([sizes[0], max(200, sizes[1] - width), width])
             else:
                 self._queue_width = sizes[2]
-                panel.hide()
+                frame.hide()
         self.bar.set_queue_visible(visible)
 
     def queue_visible(self) -> bool:
-        return self._queue_panel is not None and self._queue_panel.isVisibleTo(self)
+        return self._queue_frame is not None and self._queue_frame.isVisibleTo(self)
 
     # -- window layout, saved with the playback session ---------------------------------
 
@@ -290,7 +313,7 @@ class MainWindow(QMainWindow):
             total = sum(self.splitter.sizes())
             self.splitter.setSizes([sidebar, max(200, total - sidebar)])
         width = state.get("queue_width")
-        if isinstance(width, int) and 240 <= width <= 1000:
+        if isinstance(width, int) and 260 <= width <= 1000:
             self._queue_width = width
         if state.get("queue") is True:
             self.set_queue_visible(True)

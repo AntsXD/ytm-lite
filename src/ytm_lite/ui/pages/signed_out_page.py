@@ -10,6 +10,7 @@ from ytm_lite.app.dev import TEST_TRACKS
 from ytm_lite.app.images import ImageLoader
 from ytm_lite.app.liked import LikedIndex
 from ytm_lite.app.playback import PlaybackController
+from ytm_lite.ui.theme import font
 from ytm_lite.ui.track_table import TrackTable, TrackTableModel
 
 
@@ -26,33 +27,33 @@ class SignedOutPage(QWidget):
     ) -> None:
         super().__init__(parent)
         heading = QLabel("Sign in to see your library")
-        font = QFont(heading.font())
-        font.setPointSizeF(font.pointSizeF() * 1.8)
-        font.setBold(True)
-        heading.setFont(font)
+        heading.setFont(font(26, QFont.Weight.Bold))
         body = QLabel(
             "Your liked songs, playlists, albums and artists appear here once you sign in. "
             "Signed out, you can still play music (search arrives in milestone 4)."
         )
         body.setWordWrap(True)
         body.setObjectName("Dim")
-        button = QPushButton("Sign in…")
+        button = QPushButton("Sign in")
+        button.setObjectName("Primary")
         button.clicked.connect(self.sign_in_clicked)
         row = QHBoxLayout()
         row.addWidget(button)
         row.addStretch(1)
         tracks_label = QLabel("Test tracks")
-        tracks_label.setObjectName("Dim")
+        tracks_label.setFont(font(13, QFont.Weight.Bold))
         model = TrackTableModel(liked, self)
         model.set_tracks(TEST_TRACKS)
         table = TrackTable(model, images, liked, controller)
         table.play_requested.connect(lambda r: self.play_requested.emit(list(TEST_TRACKS), r))
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 0)
+        layout.setContentsMargins(24, 28, 12, 0)
+        layout.setSpacing(8)
         layout.addWidget(heading)
         layout.addWidget(body)
+        layout.addSpacing(4)
         layout.addLayout(row)
-        layout.addSpacing(16)
+        layout.addSpacing(24)
         layout.addWidget(tracks_label)
         layout.addWidget(table, 1)

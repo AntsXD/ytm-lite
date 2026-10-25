@@ -1,16 +1,25 @@
-"""Bottom bar: cover, title and artist, like, transport and modes, seek, volume, queue."""
+"""Bottom bar, on the black canvas: what's playing (left), the controls above the seek bar
+(centre), and quality, queue and volume (right)."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon, QMouseEvent, QResizeEvent
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QEnterEvent,
+    QFont,
+    QIcon,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QSizePolicy,
     QSlider,
     QStyle,
-    QStyleOptionSlider,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -22,9 +31,11 @@ from ytm_lite.app.play_queue import QueueEntry, RepeatMode
 from ytm_lite.app.playback import PlaybackState
 from ytm_lite.app.resolver import StreamInfo
 from ytm_lite.ui import icons
+from ytm_lite.ui.theme import ACCENT, TEXT, font
+from ytm_lite.ui.widgets import CircleButton, ElidedLabel, draw_cover
 
 _SLIDER_SCALE = 10  # slider units per second
-COVER = 48
+COVER = 56
 _REPEAT_TIPS = {
     RepeatMode.OFF: "Repeat: off",
     RepeatMode.ALL: "Repeat: all",
@@ -32,53 +43,25 @@ _REPEAT_TIPS = {
 }
 
 
-class ElidedLabel(QLabel):
-    """One line of text that ends in "…" when it doesn't fit."""
-
-    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._full = text
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._elide()
-
-    def setText(self, text: str) -> None:
-        self._full = text
-        self._elide()
-
-    def full_text(self) -> str:
-        return self._full
-
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._elide()
-
-    def _elide(self) -> None:
-        metrics = self.fontMetrics()
-        super().setText(metrics.elidedText(self._full, Qt.TextElideMode.ElideRight, self.width()))
-
-
 class ClickSlider(QSlider):
-    """A horizontal slider you can click or drag anywhere along its height.
+    """A thin horizontal slider you can click or drag anywhere along its height.
 
-    The theme draws a 4 px groove, and QSlider reacts only to clicks right on it (and
-    then just by a page step), so most clicks did nothing. Here a press jumps straight
-    to the clicked value and the handle follows the mouse until it is released.
+    It paints itself: a 4 px track that turns violet, with a handle, while the mouse is
+    over it. A press jumps straight to the clicked value and the handle follows the mouse
+    until it is released (QSlider alone only page-steps, and only on its groove).
     """
+
+    HANDLE = 6  # radius; the track's ends are where the handle's centre stops
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # arrow keys stay with the lists
+        self.setMinimumHeight(18)
+        self._hovered = False
 
     def value_at(self, x: float) -> int:
-        """The value under horizontal position `x`; the ends of the groove are the
-        minimum and maximum (the handle's centre can't go further)."""
-        option = QStyleOptionSlider()
-        self.initStyleOption(option)
-        style, control = self.style(), QStyle.ComplexControl.CC_Slider
-        groove = style.subControlRect(control, option, QStyle.SubControl.SC_SliderGroove, self)
-        handle = style.subControlRect(control, option, QStyle.SubControl.SC_SliderHandle, self)
-        span = max(1, groove.width() - handle.width())
-        offset = round(x - groove.x() - handle.width() / 2)
+        span = max(1, self.width() - 2 * self.HANDLE)
+        offset = round(x - self.HANDLE)
         return QStyle.sliderValueFromPosition(
             self.minimum(), self.maximum(), max(0, min(offset, span)), span
         )
@@ -102,8 +85,39 @@ class ClickSlider(QSlider):
         if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
             event.accept()
             self.setSliderDown(False)
+            self.update()
         else:
             super().mouseReleaseEvent(event)
+
+    def enterEvent(self, event: QEnterEvent) -> None:
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        r = self.HANDLE
+        track = QRectF(r, self.height() / 2 - 2, max(0, self.width() - 2 * r), 4)
+        painter.setBrush(QColor("#4d4d4d"))
+        painter.drawRoundedRect(track, 2, 2)
+        span = self.maximum() - self.minimum()
+        fraction = (self.sliderPosition() - self.minimum()) / span if span > 0 else 0.0
+        active = (self._hovered or self.isSliderDown()) and self.isEnabled() and span > 0
+        if fraction > 0:
+            painter.setBrush(QColor(ACCENT if active else TEXT))
+            filled = QRectF(track.left(), track.top(), track.width() * fraction, track.height())
+            painter.drawRoundedRect(filled, 2, 2)
+        if active:
+            painter.setBrush(QColor("#ffffff"))
+            center = QPointF(track.left() + track.width() * fraction, track.center().y())
+            painter.drawEllipse(center, r, r)
 
 
 class SeekSlider(ClickSlider):
@@ -118,6 +132,23 @@ class SeekSlider(ClickSlider):
     def _released(self) -> None:
         if self.maximum() > 0:
             self.seek_requested.emit(self.value() / _SLIDER_SCALE)
+
+
+class CoverView(QWidget):
+    """The current track's cover, rounded."""
+
+    def __init__(self, side: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(side, side)
+        self.pixmap: QPixmap | None = None
+
+    def set_pixmap(self, pixmap: QPixmap | None) -> None:
+        self.pixmap = pixmap
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        draw_cover(painter, self.rect(), self.pixmap, 4)
 
 
 def _button(icon: QIcon, tip: str, *, checkable: bool = False, size: int = 20) -> QToolButton:
@@ -145,38 +176,53 @@ class NowPlayingBar(QWidget):
     def __init__(self, images: ImageLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("NowPlayingBar")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._images = images
         self._thumbnail: str | None = None
+        self._unmuted_volume = 70
         self._icons = {
-            "play": icons.icon("play", 28),
-            "pause": icons.icon("pause", 28),
             "repeat": icons.toggle_icon("repeat"),
             "repeat_one": icons.toggle_icon("repeat_one"),
+            "volume": icons.icon("volume", 20, icons.DIM, hover=icons.NORMAL),
+            "volume_off": icons.icon("volume_off", 20, icons.DIM, hover=icons.NORMAL),
         }
 
-        self.cover = QLabel()
-        self.cover.setFixedSize(COVER, COVER)
-        self.cover.setStyleSheet("background: #2a2a2a;")
+        # Left: what's playing.
+        self.cover = CoverView(COVER)
         self.title = ElidedLabel("Nothing playing")
-        self.title.setObjectName("TrackTitle")
+        self.title.setFont(font(10.5, QFont.Weight.Medium))
         self.artist = ElidedLabel("")
         self.artist.setObjectName("Dim")
-        text_box = QVBoxLayout()
-        text_box.setSpacing(0)
-        text_box.addStretch(1)
-        text_box.addWidget(self.title)
-        text_box.addWidget(self.artist)
-        text_box.addStretch(1)
+        self.artist.setFont(font(9))
         heart = icons.toggle_icon("heart_outline", on_name="heart")
         self.like_button = _button(heart, "Like (Ctrl+L)", checkable=True)
         self.like_button.setEnabled(False)
         self.like_button.clicked.connect(self.like_clicked)
+        text_box = QVBoxLayout()
+        text_box.setSpacing(2)
+        text_box.addStretch(1)
+        text_box.addWidget(self.title)
+        text_box.addWidget(self.artist)
+        text_box.addStretch(1)
+        left = QWidget()
+        left_row = QHBoxLayout(left)
+        left_row.setContentsMargins(0, 0, 0, 0)
+        left_row.setSpacing(12)
+        left_row.addWidget(self.cover)
+        left_row.addLayout(text_box)
+        left_row.addWidget(self.like_button)
+        left_row.addStretch(1)
 
+        # Centre: transport above the seek bar.
+        dim, bright = icons.DIM, icons.NORMAL
         self.shuffle_button = _button(icons.toggle_icon("shuffle"), "Shuffle", checkable=True)
-        self.prev_button = _button(icons.icon("previous", 24), "Previous (Ctrl+←)", size=24)
-        self.play_button = _button(self._icons["play"], "Play (Space)", size=28)
-        self.next_button = _button(icons.icon("next", 24), "Next (Ctrl+→)", size=24)
+        self.prev_button = _button(
+            icons.icon("previous", 24, dim, hover=bright), "Previous (Ctrl+←)", size=24
+        )
+        self.play_button = CircleButton("play", 36, "#ffffff", "#000000", "#e6e6e6")
+        self.play_button.setToolTip("Play (Space)")
+        self.next_button = _button(
+            icons.icon("next", 24, dim, hover=bright), "Next (Ctrl+→)", size=24
+        )
         self.repeat_button = _button(self._icons["repeat"], _REPEAT_TIPS[RepeatMode.OFF])
         self.repeat_button.setCheckable(True)
         self.shuffle_button.clicked.connect(self.shuffle_toggled)
@@ -184,64 +230,81 @@ class NowPlayingBar(QWidget):
         self.play_button.clicked.connect(self.play_pause_clicked)
         self.next_button.clicked.connect(self.next_clicked)
         self.repeat_button.clicked.connect(self.repeat_clicked)
-
-        self.elapsed = QLabel("0:00")
-        self.elapsed.setObjectName("Dim")
-        self.total = QLabel("0:00")
-        self.total.setObjectName("Dim")
-        self.seek = SeekSlider()
-        self.seek.setMinimumWidth(200)
-        self.seek.seek_requested.connect(self.seek_requested)
-        self.seek.sliderMoved.connect(self._seek_dragged)
-
-        volume_icon = QLabel()
-        volume_icon.setPixmap(icons.icon("volume", 18, icons.DIM).pixmap(18, 18))
-        self.volume = ClickSlider()
-        self.volume.setRange(0, 100)
-        self.volume.setFixedWidth(96)
-        self.volume.setToolTip("Volume")
-        self.volume.valueChanged.connect(self._volume_moved)
-        self.quality = QLabel("")
-        self.quality.setObjectName("Dim")
-        self.queue_button = _button(
-            icons.toggle_icon("queue", 22), "Queue", checkable=True, size=22
-        )
-        self.queue_button.toggled.connect(self.queue_toggled)
-
-        left = QHBoxLayout()
-        left.setSpacing(10)
-        left.addWidget(self.cover)
-        left.addLayout(text_box, 1)
-        left.addWidget(self.like_button)
-        left_box = QWidget()
-        left_box.setLayout(left)
-        left_box.setMinimumWidth(180)
-        left_box.setMaximumWidth(360)
-        left.setContentsMargins(0, 0, 0, 0)
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(12, 8, 12, 8)
-        row.setSpacing(4)
-        row.addWidget(left_box, 3)
-        row.addSpacing(12)
-        for button in (
+        transport = QHBoxLayout()
+        transport.setSpacing(14)
+        transport.addStretch(1)
+        for widget in (
             self.shuffle_button,
             self.prev_button,
             self.play_button,
             self.next_button,
             self.repeat_button,
         ):
-            row.addWidget(button)
-        row.addSpacing(12)
-        row.addWidget(self.elapsed)
-        row.addWidget(self.seek, 4)
-        row.addWidget(self.total)
-        row.addSpacing(12)
-        row.addWidget(volume_icon)
-        row.addWidget(self.volume)
-        row.addSpacing(8)
-        row.addWidget(self.quality)
-        row.addWidget(self.queue_button)
+            transport.addWidget(widget)
+        transport.addStretch(1)
+
+        self.elapsed = QLabel("0:00")
+        self.total = QLabel("0:00")
+        for label, align in (
+            (self.elapsed, Qt.AlignmentFlag.AlignRight),
+            (self.total, Qt.AlignmentFlag.AlignLeft),
+        ):
+            label.setObjectName("Dim")
+            label.setFont(font(8.5))
+            label.setFixedWidth(44)
+            label.setAlignment(align | Qt.AlignmentFlag.AlignVCenter)
+        self.seek = SeekSlider()
+        self.seek.seek_requested.connect(self.seek_requested)
+        self.seek.sliderMoved.connect(self._seek_dragged)
+        seek_row = QHBoxLayout()
+        seek_row.setSpacing(6)
+        seek_row.addWidget(self.elapsed)
+        seek_row.addWidget(self.seek, 1)
+        seek_row.addWidget(self.total)
+        center = QWidget()
+        center.setMaximumWidth(720)
+        center_box = QVBoxLayout(center)
+        center_box.setContentsMargins(0, 0, 0, 0)
+        center_box.setSpacing(2)
+        center_box.addLayout(transport)
+        center_box.addLayout(seek_row)
+
+        # Right: quality, queue, volume.
+        self.quality = QLabel("")
+        self.quality.setObjectName("Dim")
+        self.quality.setFont(font(8.5))
+        self.queue_button = _button(
+            icons.toggle_icon("queue", 22), "Queue", checkable=True, size=22
+        )
+        self.queue_button.toggled.connect(self.queue_toggled)
+        self.mute_button = _button(self._icons["volume"], "Mute")
+        self.mute_button.clicked.connect(self._toggle_mute)
+        self.volume = ClickSlider()
+        self.volume.setRange(0, 100)
+        self.volume.setFixedWidth(110)
+        self.volume.setToolTip("Volume")
+        self.volume.valueChanged.connect(self._volume_moved)
+        right = QWidget()
+        right_row = QHBoxLayout(right)
+        right_row.setContentsMargins(0, 0, 0, 0)
+        right_row.setSpacing(6)
+        right_row.addStretch(1)
+        right_row.addWidget(self.quality)
+        right_row.addSpacing(6)
+        right_row.addWidget(self.queue_button)
+        right_row.addWidget(self.mute_button)
+        right_row.addWidget(self.volume)
+
+        # Equal stretch on both sides keeps the controls centred in the window.
+        for side in (left, right):
+            side.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            side.setMinimumWidth(200)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 8, 12, 10)
+        row.setSpacing(16)
+        row.addWidget(left, 3)
+        row.addWidget(center, 4)
+        row.addWidget(right, 3)
 
         images.loaded.connect(self._image_loaded)
 
@@ -256,7 +319,7 @@ class NowPlayingBar(QWidget):
             self.artist.setText("")
             self.quality.setText("")
             self._thumbnail = None
-            self.cover.clear()
+            self.cover.set_pixmap(None)
             self.set_position(None, None)
             return
         self.title.setText(track.title)
@@ -265,7 +328,7 @@ class NowPlayingBar(QWidget):
         self.artist.setToolTip(track.artist_text)
         if track.thumbnail != self._thumbnail:
             self._thumbnail = track.thumbnail
-            self.cover.clear()
+            self.cover.set_pixmap(None)
             self._show_cover()
 
     def set_liked(self, liked: bool) -> None:
@@ -279,7 +342,7 @@ class NowPlayingBar(QWidget):
 
     def set_state(self, state: str) -> None:
         playing = state in (PlaybackState.PLAYING.value, PlaybackState.LOADING.value)
-        self.play_button.setIcon(self._icons["pause" if playing else "play"])
+        self.play_button.set_icon_name("pause" if playing else "play")
         self.play_button.setToolTip("Pause (Space)" if playing else "Play (Space)")
         if state == PlaybackState.LOADING.value:
             self.quality.setText("Loading…")
@@ -302,6 +365,7 @@ class NowPlayingBar(QWidget):
         self.volume.blockSignals(True)
         self.volume.setValue(round(volume))
         self.volume.blockSignals(False)
+        self._update_mute_icon()
 
     def set_position(self, position: float | None, duration: float | None) -> None:
         self.total.setText(format_duration(duration) if duration else "0:00")
@@ -318,7 +382,20 @@ class NowPlayingBar(QWidget):
     # -- internals ----------------------------------------------------------------------
 
     def _volume_moved(self, value: int) -> None:
+        self._update_mute_icon()
         self.volume_changed.emit(float(value))
+
+    def _toggle_mute(self) -> None:
+        if self.volume.value() > 0:
+            self._unmuted_volume = self.volume.value()
+            self.volume.setValue(0)
+        else:
+            self.volume.setValue(self._unmuted_volume or 50)
+
+    def _update_mute_icon(self) -> None:
+        muted = self.volume.value() == 0
+        self.mute_button.setIcon(self._icons["volume_off" if muted else "volume"])
+        self.mute_button.setToolTip("Unmute" if muted else "Mute")
 
     def _seek_dragged(self, value: int) -> None:
         self.elapsed.setText(format_duration(value / _SLIDER_SCALE))
@@ -327,23 +404,9 @@ class NowPlayingBar(QWidget):
         return round(COVER * self.devicePixelRatioF())
 
     def _show_cover(self) -> None:
-        px = self._cover_px()
-        pixmap = self._images.get(self._thumbnail, px)
-        if pixmap is None:
-            return
-        side = min(pixmap.width(), pixmap.height())  # centre-crop video thumbnails
-        square = pixmap.copy(
-            (pixmap.width() - side) // 2, (pixmap.height() - side) // 2, side, side
-        )
-        if side != px:
-            square = square.scaled(
-                px,
-                px,
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        square.setDevicePixelRatio(self.devicePixelRatioF())
-        self.cover.setPixmap(square)
+        pixmap = self._images.get(self._thumbnail, self._cover_px())
+        if pixmap is not None:
+            self.cover.set_pixmap(pixmap)
 
     def _image_loaded(self, key: str) -> None:
         if self._thumbnail and key == image_key(self._thumbnail, self._cover_px()):

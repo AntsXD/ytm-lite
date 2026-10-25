@@ -55,6 +55,8 @@ sha256 and puts `libmpv-2.dll` in `vendor/`. On Linux, install libmpv from your 
 uv run python -m ytm_lite
 ```
 
+- The window is three rounded panels on black (your library, the page you're on, the queue)
+  with the player along the bottom; the accent color is violet.
 - Double-click a track to play it; the rest of the list becomes the queue. Right-click a track
   (or a selection) for Play next, Add to queue, Start radio, Like and Copy link.
 - The list button at the right of the bar opens the queue: drag songs to reorder them, Delete
@@ -148,6 +150,11 @@ ytmusicapi 1.12.3, running from source.
 
 Compared with milestone 2, the queue, the new bar and session saving cost 2–3 MB; a queue of a few
 hundred songs with the queue panel open adds another 4–5 MB.
+
+After milestone 3 the UI was restyled (panels, violet accent, taller rows with bigger covers,
+playlist headers tinted from their cover). Measured the same way, signed out: idle 86.7 MB /
+48.5 MB, big playlist on screen 129.3 MB / 85.4 MB, that playlist as the queue with the panel
+open 129.0 MB / 84.8 MB, cold start 1.09 s: within 3 MB of the numbers above.
 
 Findings that shaped milestone 3:
 

@@ -93,6 +93,7 @@ class LoginDialog(QDialog):
         )
         info.setWordWrap(True)
         self.firefox_button = QPushButton("Import from Firefox")
+        self.firefox_button.setObjectName("Primary")
         self.firefox_button.clicked.connect(self._import_firefox)
         if not profiles:
             info.setText("No Firefox profile was found. Use “Paste headers” instead.")
@@ -120,6 +121,7 @@ class LoginDialog(QDialog):
         self.paste_status = QLabel("")
         self.paste_status.setObjectName("Dim")
         self.headers_button = QPushButton("Sign in")
+        self.headers_button.setObjectName("Primary")
         self.headers_button.setEnabled(False)
         self.headers_button.clicked.connect(self._sign_in_with_headers)
         self._check_timer = QTimer(self)
@@ -144,6 +146,7 @@ class LoginDialog(QDialog):
         )
         info.setWordWrap(True)
         self.cookies_button = QPushButton("Choose cookies.txt…")
+        self.cookies_button.setObjectName("Primary")
         self.cookies_button.clicked.connect(self._choose_cookies)
         layout = QVBoxLayout(tab)
         layout.addWidget(info)

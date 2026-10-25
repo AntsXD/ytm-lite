@@ -610,3 +610,13 @@ def test_restore_is_paused_and_play_resumes_where_it_was(rig: Rig) -> None:
     rig.resolver.complete("b", fast=False)  # the Premium preload wins
     assert rig.player.loads[-1][0] == "https://x.googlevideo.com/b"
     assert rig.player.loads[-1][2]["start"] == "42.000"
+
+
+def test_shuffle_play_starts_with_the_chosen_track(rig: Rig) -> None:
+    modes: list[bool] = []
+    rig.controller.modes_changed.connect(lambda: modes.append(rig.queue.shuffled))
+    rig.controller.play_tracks([track(i) for i in "abcdef"], 3, shuffle=True)
+    assert rig.current_id == "d" and rig.queue.cursor == 0 and rig.queue.shuffled
+    assert sorted(rig.ids()) == list("abcdef")
+    assert modes == [True]
+    assert rig.resolver.requests == [("d", NOW, FAST)]

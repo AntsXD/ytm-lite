@@ -124,9 +124,20 @@ class PlaybackController(QObject):
     def state(self) -> PlaybackState:
         return self._state
 
-    def play_tracks(self, tracks: Sequence[Track], start: int = 0, *, radio: bool = False) -> None:
+    def play_tracks(
+        self,
+        tracks: Sequence[Track],
+        start: int = 0,
+        *,
+        radio: bool = False,
+        shuffle: bool | None = None,
+    ) -> None:
         """Replace the queue with `tracks` and play from `start`. With `radio`, radio
-        suggestions follow even when autoplay is off ("Start radio")."""
+        suggestions follow even when autoplay is off ("Start radio"); `shuffle` turns
+        shuffle on or off first ("Shuffle play": `start` first, the rest shuffled)."""
+        if shuffle is not None and shuffle != self.queue.shuffled:
+            self.queue.set_shuffle(shuffle)  # the old queue is replaced right below
+            self.modes_changed.emit()
         entry = self.queue.set(tracks, start)
         self._radio_queue = radio
         self._radio_seed = None

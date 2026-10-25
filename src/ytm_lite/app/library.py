@@ -191,7 +191,7 @@ class Library(QObject):
             priority=Priority.BACKGROUND,
         )
         # Liked Songs drives every heart, so fetch it even if its page isn't open.
-        self._fetch_full(LIKED_SONGS_ID, "Liked Songs")
+        self._fetch_full(LIKED_SONGS_ID, "your liked songs")
 
     def _set_playlists(self, items: list[PlaylistSummary]) -> None:
         self.playlists = items

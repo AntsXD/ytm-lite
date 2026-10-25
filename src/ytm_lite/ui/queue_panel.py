@@ -19,6 +19,7 @@ from PySide6.QtCore import (
     QPersistentModelIndex,
     QPoint,
     QRect,
+    QRectF,
     QSize,
     Qt,
     QTimer,
@@ -27,25 +28,21 @@ from PySide6.QtGui import (
     QColor,
     QDropEvent,
     QFont,
-    QFontMetrics,
     QGuiApplication,
     QKeyEvent,
     QPainter,
-    QPalette,
     QShowEvent,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QApplication,
-    QCheckBox,
     QHBoxLayout,
     QLabel,
     QListView,
     QMenu,
+    QPushButton,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -54,13 +51,13 @@ from ytm_lite.app.images import ImageLoader
 from ytm_lite.app.models import format_duration
 from ytm_lite.app.play_queue import QueueEntry
 from ytm_lite.app.playback import PlaybackController
-from ytm_lite.ui.theme import ACCENT
+from ytm_lite.ui.theme import ACCENT, HOVER, SELECTED, TEXT, TEXT_DIM, TEXT_FAINT, font
+from ytm_lite.ui.widgets import ToggleSwitch, draw_cover
 
-ROW_HEIGHT = 48
-COVER = 36
+ROW_HEIGHT = 56
+COVER = 40
 MIME_TYPE = "application/x-ytm-lite-queue"
 ENTRY_ROLE = Qt.ItemDataRole.UserRole
-PLAYED = QColor("#7a7a7a")
 
 AnyIndex = QModelIndex | QPersistentModelIndex
 
@@ -197,7 +194,7 @@ class QueueModel(QAbstractListModel):
 
 
 class QueueDelegate(QStyledItemDelegate):
-    """Cover, title and artist, duration; played entries dimmed, the current one red."""
+    """Cover, title and artist, duration; played entries faded, the current one violet."""
 
     def __init__(
         self, images: ImageLoader, model: QueueModel, parent: QWidget | None = None
@@ -205,6 +202,9 @@ class QueueDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._images = images
         self._model = model
+        self._current_font = font(weight=QFont.Weight.DemiBold)
+        self._title_font = font(weight=QFont.Weight.Medium)
+        self._small = font(9)
 
     def sizeHint(self, option: QStyleOptionViewItem, index: AnyIndex) -> QSize:
         return QSize(option.rect.width(), ROW_HEIGHT)
@@ -213,57 +213,49 @@ class QueueDelegate(QStyledItemDelegate):
         entry: QueueEntry | None = index.data(ENTRY_ROLE)
         if entry is None:
             return
-        widget = option.widget
-        style = widget.style() if widget is not None else QApplication.style()
-        opt = QStyleOptionViewItem(option)
-        opt.text = ""
-        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
-
         rect: QRect = option.rect
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if selected or hovered:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(SELECTED if selected else HOVER))
+            painter.drawRoundedRect(QRectF(rect.adjusted(0, 1, 0, -1)), 6, 6)
+
         cover = QRect(rect.left() + 8, rect.top() + (rect.height() - COVER) // 2, COVER, COVER)
         px = round(COVER * painter.device().devicePixelRatioF())
-        pixmap = self._images.get(entry.track.thumbnail, px)
-        if pixmap is None:
-            painter.fillRect(cover, QColor("#2a2a2a"))
-        else:
-            side = min(pixmap.width(), pixmap.height())
-            source = QRect((pixmap.width() - side) // 2, (pixmap.height() - side) // 2, side, side)
-            painter.drawPixmap(cover, pixmap, source)
+        draw_cover(painter, cover, self._images.get(entry.track.thumbnail, px))
 
         row, cursor = index.row(), self._model.cursor
-        selected = bool(option.state & QStyle.StateFlag.State_Selected)
-        normal = option.palette.color(
-            QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text
-        )
-        title_color = QColor(ACCENT) if row == cursor else PLAYED if row < cursor else normal
-        sub_color = PLAYED if row < cursor else QColor("#9a9a9a")
+        played, current = row < cursor, row == cursor
+        title_color = QColor(ACCENT if current else TEXT_FAINT if played else TEXT)
+        sub_color = QColor(TEXT_FAINT if played else TEXT_DIM)
 
-        metrics = option.fontMetrics
+        painter.setFont(self._small)  # measure with the painter: see track_table._text
+        small_metrics = painter.fontMetrics()
         duration = format_duration(entry.track.duration) if entry.track.duration else ""
-        time_width = metrics.horizontalAdvance(duration) + 12 if duration else 0
-        text = QRect(cover.right() + 10, rect.top() + 6, 0, rect.height() - 12)
-        text.setRight(rect.right() - 8 - time_width)
+        time_width = small_metrics.horizontalAdvance(duration) + 12 if duration else 0
+        text = QRect(cover.right() + 12, rect.top() + 9, 0, rect.height() - 18)
+        text.setRight(rect.right() - 10 - time_width)
         half = text.height() // 2
         top, bottom = QRect(text), QRect(text)
         top.setHeight(half)
         bottom.setTop(text.top() + half)
 
-        painter.save()
         align = int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         elide = Qt.TextElideMode.ElideRight
-        font = QFont(option.font)
-        font.setBold(row == cursor)
-        painter.setFont(font)
+        title_font = self._current_font if current else self._title_font
+        painter.setFont(title_font)
         painter.setPen(title_color)
-        title = QFontMetrics(font).elidedText(entry.track.title, elide, top.width())
+        title = painter.fontMetrics().elidedText(entry.track.title, elide, top.width())
         painter.drawText(top, align, title)
-        painter.setFont(option.font)
+        painter.setFont(self._small)
         painter.setPen(sub_color)
-        painter.drawText(
-            bottom, align, metrics.elidedText(entry.track.artist_text, elide, bottom.width())
-        )
+        artist = small_metrics.elidedText(entry.track.artist_text, elide, bottom.width())
+        painter.drawText(bottom, align, artist)
         if duration:
-            right = QRect(rect.right() - 8 - time_width, rect.top(), time_width, rect.height())
+            right = QRect(rect.right() - 10 - time_width, rect.top(), time_width, rect.height())
             painter.drawText(
                 right, int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight), duration
             )
@@ -285,6 +277,9 @@ class QueueView(QListView):
         self.setItemDelegate(QueueDelegate(images, model, self))
         self.setUniformItemSizes(True)
         self.setFrameShape(QListView.Shape.NoFrame)
+        self.setMouseTracking(True)
+        self.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
@@ -400,33 +395,37 @@ class QueuePanel(QWidget):
         self.view = QueueView(self.model, controller, images)
 
         title = QLabel("Queue")
-        title.setObjectName("TrackTitle")
+        title.setFont(font(13, QFont.Weight.Bold))
         self.summary = QLabel("")
         self.summary.setObjectName("Dim")
-        clear = QToolButton()
-        clear.setText("Clear")
+        self.summary.setFont(font(9))
+        clear = QPushButton("Clear")
+        clear.setObjectName("Flat")
         clear.setToolTip("Remove everything except the current song")
         clear.clicked.connect(controller.clear_queue)
-        self.autoplay = QCheckBox("Autoplay")
+        self.autoplay = ToggleSwitch("Autoplay")
         self.autoplay.setToolTip("When the queue runs out, keep playing similar songs")
         self.autoplay.toggled.connect(controller.set_radio)
 
         top = QHBoxLayout()
-        top.setSpacing(8)
+        top.setSpacing(10)
         top.addWidget(title)
         top.addStretch(1)
         top.addWidget(self.autoplay)
         top.addWidget(clear)
         header = QVBoxLayout()
-        header.setContentsMargins(12, 8, 8, 6)
-        header.setSpacing(0)
+        header.setContentsMargins(16, 14, 10, 8)
+        header.setSpacing(2)
         header.addLayout(top)
         header.addWidget(self.summary)
+        body = QVBoxLayout()
+        body.setContentsMargins(8, 0, 4, 8)
+        body.addWidget(self.view)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addLayout(header)
-        layout.addWidget(self.view, 1)
+        layout.addLayout(body, 1)
 
         # Follow the current song while it is in view; once you scroll it out of view,
         # the list stays where you put it.

@@ -1,31 +1,186 @@
-"""Left sidebar: Liked Songs, playlists, albums, artists, and the account button."""
+"""Left sidebar: Liked Songs, albums, artists, your playlists (with covers), and the
+account button."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any
 
-from PySide6.QtCore import QModelIndex, Qt, Signal
+from PySide6.QtCore import (
+    QAbstractListModel,
+    QModelIndex,
+    QPersistentModelIndex,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QListView,
     QMenu,
+    QPushButton,
     QSizePolicy,
     QStyle,
-    QToolButton,
-    QTreeWidget,
-    QTreeWidgetItem,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
 
+from ytm_lite.app.images import ImageLoader
 from ytm_lite.app.models import LIKED_SONGS_ID, PlaylistSummary
+from ytm_lite.ui import icons
+from ytm_lite.ui.theme import ACCENT_FILL, HOVER, SELECTED, TEXT, TEXT_DIM, font
+from ytm_lite.ui.widgets import draw_cover
 
 Route = tuple[str, ...]
-ROUTE_ROLE = Qt.ItemDataRole.UserRole
+ITEM_ROLE = Qt.ItemDataRole.UserRole
+COVER = 36
+
+AnyIndex = QModelIndex | QPersistentModelIndex
 
 
-def _route_of(item: QTreeWidgetItem | None) -> Route | None:
-    # Qt hands stored tuples back as lists.
-    value = item.data(0, ROUTE_ROLE) if item is not None else None
-    return tuple(value) if value else None
+@dataclass(frozen=True, slots=True)
+class SidebarItem:
+    kind: str  # "nav", "header", "playlist" or "hint"
+    text: str
+    route: Route | None = None
+    icon: str | None = None
+    subtitle: str = ""
+    thumbnail: str | None = None
+
+    @property
+    def selectable(self) -> bool:
+        return self.route is not None
+
+
+_HEIGHTS = {"nav": 40, "header": 40, "playlist": 52, "hint": 64}
+_NAV = (
+    SidebarItem("nav", "Liked music", ("liked",), "heart"),
+    SidebarItem("nav", "Albums", ("albums",), "album"),
+    SidebarItem("nav", "Artists", ("artists",), "person"),
+)
+
+
+class SidebarModel(QAbstractListModel):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.items: list[SidebarItem] = []
+
+    def set_items(self, items: Sequence[SidebarItem]) -> None:
+        self.beginResetModel()
+        self.items = list(items)
+        self.endResetModel()
+
+    def row_of(self, route: Route) -> int:
+        for row, item in enumerate(self.items):
+            if item.route == route:
+                return row
+        return -1
+
+    def rowCount(self, parent: AnyIndex = QModelIndex()) -> int:  # noqa: B008
+        return 0 if parent.isValid() else len(self.items)
+
+    def data(self, index: AnyIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid():
+            return None
+        item = self.items[index.row()]
+        if role == ITEM_ROLE:
+            return item
+        if role == Qt.ItemDataRole.DisplayRole:
+            return item.text
+        if role == Qt.ItemDataRole.ToolTipRole and item.kind == "playlist":
+            return item.text
+        return None
+
+    def flags(self, index: AnyIndex) -> Qt.ItemFlag:
+        if index.isValid() and self.items[index.row()].selectable:
+            return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        return Qt.ItemFlag.NoItemFlags
+
+
+class SidebarDelegate(QStyledItemDelegate):
+    def __init__(self, images: ImageLoader, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._images = images
+        self._bold = font(weight=QFont.Weight.DemiBold)
+        self._small = font(9)
+
+    def sizeHint(self, option: QStyleOptionViewItem, index: AnyIndex) -> QSize:
+        item: SidebarItem = index.data(ITEM_ROLE)
+        return QSize(option.rect.width(), _HEIGHTS[item.kind])
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: AnyIndex) -> None:
+        item: SidebarItem = index.data(ITEM_ROLE)
+        rect: QRect = option.rect
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver) and item.selectable
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if selected or hovered:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(SELECTED if selected else HOVER))
+            painter.drawRoundedRect(QRectF(rect.adjusted(4, 2, -4, -2)), 6, 6)
+        bright = QColor(TEXT if selected or hovered else TEXT_DIM)
+        align = int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        if item.kind == "nav":
+            icon_rect = QRectF(rect.left() + 16, rect.center().y() - 11, 22, 22)
+            icons.paint(painter, item.icon or "queue", icon_rect, bright)
+            painter.setFont(self._bold)
+            painter.setPen(bright)
+            painter.drawText(rect.adjusted(52, 0, -8, 0), align, item.text)
+        elif item.kind == "header":
+            painter.setFont(self._bold)
+            painter.setPen(QColor(TEXT))
+            painter.drawText(rect.adjusted(16, 8, -8, 0), align, item.text)
+        elif item.kind == "hint":
+            painter.setPen(QColor(TEXT_DIM))
+            flags = int(Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap)
+            painter.drawText(rect.adjusted(16, 0, -12, 0), flags, item.text)
+        else:
+            cover = QRect(rect.left() + 12, rect.top() + (rect.height() - COVER) // 2, COVER, COVER)
+            px = round(COVER * painter.device().devicePixelRatioF())
+            draw_cover(painter, cover, self._images.get(item.thumbnail, px))
+            left = cover.right() + 12
+            width = rect.right() - left - 8
+            top = QRect(left, rect.top() + 8, width, rect.height() // 2 - 8)
+            bottom = QRect(left, rect.top() + rect.height() // 2, width, rect.height() // 2 - 8)
+            painter.setPen(QColor(TEXT))
+            painter.setFont(option.font)  # measure with the painter: see track_table._text
+            title = painter.fontMetrics().elidedText(item.text, Qt.TextElideMode.ElideRight, width)
+            painter.drawText(top, align, title)
+            painter.setFont(self._small)
+            painter.setPen(QColor(TEXT_DIM))
+            sub = painter.fontMetrics().elidedText(
+                item.subtitle, Qt.TextElideMode.ElideRight, width
+            )
+            painter.drawText(bottom, align, sub)
+        painter.restore()
+
+
+def avatar_icon(name: str, side: int = 28) -> QIcon:
+    """A violet circle with the name's first letter."""
+    ratio = 2.0
+    pixmap = QPixmap(round(side * ratio), round(side * ratio))
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(ACCENT_FILL))
+    painter.drawEllipse(pixmap.rect())
+    letter = font(weight=QFont.Weight.Bold)
+    letter.setPixelSize(round(side * ratio * 0.5))
+    painter.setFont(letter)
+    painter.setPen(QColor("#ffffff"))
+    painter.drawText(pixmap.rect(), int(Qt.AlignmentFlag.AlignCenter), (name[:1] or "?").upper())
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return QIcon(pixmap)
 
 
 class Sidebar(QWidget):
@@ -34,114 +189,114 @@ class Sidebar(QWidget):
     sign_out_requested = Signal()
     refresh_requested = Signal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, images: ImageLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumWidth(180)
-        style = self.style()
-        self.tree = QTreeWidget()
-        self.tree.setHeaderHidden(True)
-        self.tree.setIndentation(14)
-        self.tree.setUniformRowHeights(True)
-        self.tree.setFrameShape(QTreeWidget.Shape.NoFrame)
-        self.tree.setExpandsOnDoubleClick(False)
+        self.setMinimumWidth(200)
+        self._playlists: list[SidebarItem] = []
+        self._signed_in = False
+        self.model = SidebarModel(self)
+        self.view = QListView()
+        self.view.setModel(self.model)
+        self.view.setItemDelegate(SidebarDelegate(images, self.view))
+        self.view.setFrameShape(QListView.Shape.NoFrame)
+        self.view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view.setMouseTracking(True)
+        self.view.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.view.selectionModel().currentChanged.connect(self._on_current)
 
-        def item(text: str, route: Route | None, icon: QStyle.StandardPixmap) -> QTreeWidgetItem:
-            entry = QTreeWidgetItem([text])
-            entry.setData(0, ROUTE_ROLE, route)
-            entry.setIcon(0, style.standardIcon(icon))
-            self.tree.addTopLevelItem(entry)
-            return entry
+        self._repaint = QTimer(self)  # once per burst of finished cover downloads
+        self._repaint.setSingleShot(True)
+        self._repaint.setInterval(40)
+        self._repaint.timeout.connect(self.view.viewport().update)
+        images.loaded.connect(self._image_loaded)
 
-        self._liked = item("Liked Songs", ("liked",), QStyle.StandardPixmap.SP_DialogYesButton)
-        self._playlists = item("Playlists", None, QStyle.StandardPixmap.SP_DirIcon)
-        self._albums = item("Albums", ("albums",), QStyle.StandardPixmap.SP_DriveCDIcon)
-        self._artists = item("Artists", ("artists",), QStyle.StandardPixmap.SP_DirHomeIcon)
-        self._playlists.setExpanded(True)
-        self.tree.currentItemChanged.connect(self._on_current)
-        self.tree.itemClicked.connect(self._on_clicked)
-
-        self.account = QToolButton()
-        self.account.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.account = QPushButton()
+        self.account.setObjectName("Account")
+        self.account.setIconSize(QSize(28, 28))
         self.account.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.account.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._menu = QMenu(self)
         self._account_label = self._menu.addAction("")
         self._account_label.setEnabled(False)
         self._menu.addSeparator()
         self._menu.addAction("Refresh library").triggered.connect(self.refresh_requested)
         self._menu.addAction("Sign out").triggered.connect(self.sign_out_requested)
-        self._signed_in = False
-        self.account.clicked.connect(self._account_clicked)
+        self.account.setMenu(self._menu)
+        self.sign_in = QPushButton("Sign in")
+        self.sign_in.setObjectName("Primary")
+        self.sign_in.clicked.connect(self.sign_in_requested)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.addWidget(self.tree, 1)
+        layout.setContentsMargins(4, 8, 4, 8)
+        layout.setSpacing(6)
+        layout.addWidget(self.view, 1)
         layout.addWidget(self.account)
+        layout.addWidget(self.sign_in)
         self.set_account(None)
+
+    def _image_loaded(self, _key: str) -> None:
+        if self.isVisible():
+            self._repaint.start()
+
+    def _rebuild(self) -> None:
+        current = self._current_route()
+        if self._signed_in:
+            items = [*_NAV, SidebarItem("header", "Playlists"), *self._playlists]
+        else:
+            items = [SidebarItem("hint", "Sign in to see your playlists, albums and artists here.")]
+        self.view.selectionModel().blockSignals(True)
+        self.model.set_items(items)
+        if current is not None:
+            self._select_row(self.model.row_of(current))
+        self.view.selectionModel().blockSignals(False)
 
     def set_account(self, name: str | None) -> None:
         self._signed_in = name is not None
-        for entry in (self._liked, self._playlists, self._albums, self._artists):
-            entry.setHidden(not self._signed_in)
-        if self._signed_in:
-            self.account.setText(f"{name}  ▾")
+        self.account.setVisible(self._signed_in)
+        self.sign_in.setVisible(not self._signed_in)
+        if name is not None:
+            self.account.setText(f"  {name}")
+            self.account.setIcon(avatar_icon(name))
             self._account_label.setText(f"Signed in as {name}")
-            self.account.setMenu(self._menu)
-        else:
-            self.account.setText("Sign in…")
-            self.account.setMenu(None)  # type: ignore[arg-type]
-
-    def _account_clicked(self) -> None:
-        if not self._signed_in:  # signed in, the button opens its menu instead
-            self.sign_in_requested.emit()
+        self._rebuild()
 
     def set_playlists(self, playlists: Sequence[PlaylistSummary]) -> None:
-        current_route = _route_of(self.tree.currentItem())
-        self.tree.blockSignals(True)
-        self._playlists.takeChildren()
-        for playlist in playlists:
-            if playlist.id in (LIKED_SONGS_ID, "SE"):  # Liked Songs has its own entry
-                continue
-            child = QTreeWidgetItem([playlist.title])
-            child.setData(0, ROUTE_ROLE, ("playlist", playlist.id, playlist.title))
-            child.setToolTip(0, playlist.title)
-            self._playlists.addChild(child)
-            if current_route == ("playlist", playlist.id, playlist.title):
-                self.tree.setCurrentItem(child)
-        self.tree.blockSignals(False)
+        self._playlists = [
+            SidebarItem(
+                "playlist",
+                p.title,
+                ("playlist", p.id, p.title),
+                subtitle=" · ".join(x for x in ("Playlist", p.author or "") if x),
+                thumbnail=p.thumbnail,
+            )
+            for p in playlists
+            if p.id not in (LIKED_SONGS_ID, "SE")  # Liked Songs has its own entry
+        ]
+        self._rebuild()
 
     def select(self, route: Route) -> None:
         """Highlight the entry for `route` without navigating."""
-        self.tree.blockSignals(True)
+        selection = self.view.selectionModel()
+        selection.blockSignals(True)
         try:
-            for entry in self._iter_items():
-                if _route_of(entry) == route:
-                    self.tree.setCurrentItem(entry)
-                    return
-            self.tree.setCurrentIndex(QModelIndex())
+            self._select_row(self.model.row_of(route))
         finally:
-            self.tree.blockSignals(False)
+            selection.blockSignals(False)
+        self.view.viewport().update()
 
-    def _iter_items(self) -> list[QTreeWidgetItem]:
-        items: list[QTreeWidgetItem] = []
-        for i in range(self.tree.topLevelItemCount()):
-            top = self.tree.topLevelItem(i)
-            if top is None:
-                continue
-            items.append(top)
-            for j in range(top.childCount()):
-                child = top.child(j)
-                if child is not None:
-                    items.append(child)
-        return items
+    def _select_row(self, row: int) -> None:
+        if row < 0:
+            self.view.clearSelection()
+            self.view.setCurrentIndex(QModelIndex())
+        else:
+            self.view.setCurrentIndex(self.model.index(row))
 
-    def _on_current(
-        self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None
-    ) -> None:
-        route = _route_of(current)
-        if route is not None:
-            self.navigate.emit(route)
+    def _current_route(self) -> Route | None:
+        index = self.view.currentIndex()
+        item: SidebarItem | None = index.data(ITEM_ROLE) if index.isValid() else None
+        return item.route if item is not None else None
 
-    def _on_clicked(self, entry: QTreeWidgetItem, _column: int) -> None:
-        if entry is self._playlists:
-            entry.setExpanded(not entry.isExpanded())
+    def _on_current(self, current: QModelIndex, _previous: QModelIndex) -> None:
+        item: SidebarItem | None = current.data(ITEM_ROLE) if current.isValid() else None
+        if item is not None and item.route is not None:
+            self.navigate.emit(item.route)

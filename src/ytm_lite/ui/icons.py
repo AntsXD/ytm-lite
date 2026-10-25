@@ -11,14 +11,14 @@ from __future__ import annotations
 import re
 from functools import cache
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPainterPath, QPixmap
 
-from ytm_lite.ui.theme import ACCENT
+from ytm_lite.ui.theme import ACCENT, TEXT, TEXT_DIM, TEXT_FAINT
 
-NORMAL = "#e8e8e8"
-DIM = "#9a9a9a"
-DISABLED = "#555555"
+NORMAL = TEXT
+DIM = TEXT_DIM
+DISABLED = TEXT_FAINT
 
 PATHS = {
     "play": "M8 5v14l11-7z",
@@ -49,6 +49,22 @@ PATHS = {
         "19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 "
         "5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 "
         "2.89-3.14 5.74-7.9 10.05z"
+    ),
+    "volume_off": (
+        "M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 "
+        ".94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c"
+        "2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-"
+        "2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 "
+        "6.09 12 8.18V4z"
+    ),
+    "album": (
+        "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-"
+        "2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 "
+        "1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"
+    ),
+    "person": (
+        "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-"
+        "2c0-2.66-5.33-4-8-4z"
     ),
     "volume": (
         "M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 "
@@ -130,6 +146,16 @@ def _path(name: str) -> QPainterPath:
     return parse_path(PATHS[name])
 
 
+def paint(painter: QPainter, name: str, rect: QRectF, color: QColor | str) -> None:
+    """Draw icon `name` scaled into the square `rect`."""
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.translate(rect.x(), rect.y())
+    painter.scale(rect.width() / 24, rect.height() / 24)
+    painter.fillPath(_path(name), QColor(color))
+    painter.restore()
+
+
 def _pixmap(name: str, size: int, color: str, dpr: float) -> QPixmap:
     side = max(1, round(size * dpr))
     pixmap = QPixmap(side, side)
@@ -154,14 +180,18 @@ def icon(
     size: int = 20,
     color: str = NORMAL,
     *,
+    hover: str | None = None,
     checked: str | None = None,
     checked_name: str | None = None,
 ) -> QIcon:
-    """An icon. For checkable buttons, `checked` colors the on state, which is drawn
-    from `checked_name` if given (an outline heart that fills in)."""
+    """An icon; `hover` brightens it under the mouse. For checkable buttons, `checked`
+    colors the on state, which is drawn from `checked_name` if given (an outline heart
+    that fills in)."""
     result = QIcon()
     for dpr in _ratios():
         result.addPixmap(_pixmap(name, size, color, dpr), QIcon.Mode.Normal, QIcon.State.Off)
+        if hover is not None:
+            result.addPixmap(_pixmap(name, size, hover, dpr), QIcon.Mode.Active, QIcon.State.Off)
         disabled = _pixmap(name, size, DISABLED, dpr)
         result.addPixmap(disabled, QIcon.Mode.Disabled, QIcon.State.Off)
         if checked is not None:
@@ -172,5 +202,5 @@ def icon(
 
 
 def toggle_icon(name: str, size: int = 20, *, on_name: str | None = None) -> QIcon:
-    """Dim when off, accent-colored when on (shuffle, repeat, like)."""
-    return icon(name, size, DIM, checked=ACCENT, checked_name=on_name)
+    """Dim when off (brighter under the mouse), violet when on (shuffle, repeat, like)."""
+    return icon(name, size, DIM, hover=NORMAL, checked=ACCENT, checked_name=on_name)

@@ -13,10 +13,11 @@ class Banner(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("Banner")
-        self.setStyleSheet("#Banner { background: #3a2a10; border-bottom: 1px solid #6b4e1a; }")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._text = QLabel()
         self._text.setWordWrap(True)
         self._action = QPushButton()
+        self._action.setObjectName("Primary")
         self._action.clicked.connect(self.action_clicked)
         close = QToolButton()
         close.setText("✕")
@@ -24,7 +25,7 @@ class Banner(QFrame):
         close.setToolTip("Dismiss")
         close.clicked.connect(self.hide)
         row = QHBoxLayout(self)
-        row.setContentsMargins(16, 6, 8, 6)
+        row.setContentsMargins(16, 8, 10, 8)
         row.addWidget(self._text, 1)
         row.addWidget(self._action)
         row.addWidget(close)
@@ -47,10 +48,6 @@ class Toast(QLabel):
         self.setObjectName("Toast")
         self.setWordWrap(True)
         self.setMaximumWidth(420)
-        self.setStyleSheet(
-            "#Toast { background: #2b2b2b; color: #f0f0f0; border: 1px solid #444;"
-            " border-radius: 6px; padding: 8px 12px; }"
-        )
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
