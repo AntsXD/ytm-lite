@@ -7,15 +7,17 @@ App -> worker:
     {"op": "configure", "cachedir": str, "cookies": str | null, "js_runtime": str,
      "player_clients": [str], "api_headers": {...} | null, "visitor_id": str | null,
      "idle_timeout": float}
-    {"op": "resolve", "id": int, "video_id": str, "priority": 0 | 1, "format": str | null}
+    {"op": "resolve", "id": int, "video_id": str, "priority": 0 | 1, "format": str | null,
+     "fast": bool}   # fast: quick standard-quality resolve instead of Premium (signed in)
     {"op": "api", "id": int, "method": str, "args": {...}, "background": bool,
      "headers": {...} | null}
     {"op": "shutdown"}
 
 Worker -> app:
     {"op": "ready", "pid": int, "versions": {...}, "signed_in": bool}
-    {"op": "result", "id": int, "video_id": str, "stream": StreamDict}
-    {"op": "error", "id": int, "video_id": str, "kind": ErrorKind, "message": str}
+    {"op": "result", "id": int, "video_id": str, "fast": bool, "stream": StreamDict}
+    {"op": "error", "id": int, "video_id": str, "fast": bool, "kind": ErrorKind,
+     "message": str}
     {"op": "api_result", "id": int, "result": ...}
     {"op": "api_error", "id": int, "kind": ApiErrorKind, "message": str}
     {"op": "runtime", "js_runtime": {"name": str, "version": str} | null}

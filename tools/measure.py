@@ -11,7 +11,8 @@ Scenarios:
     startup   cold start to first paint, median of 5 runs
     idle      window open, nothing playing
     playing   test tracks playing, window minimized (RAM + CPU)
-    window    test tracks playing, window open
+    window    test tracks playing, window open, a big playlist on screen
+    queue     that big playlist playing as the queue, queue panel open
 """
 
 from __future__ import annotations
@@ -231,18 +232,23 @@ def run_window_idle(seconds: float) -> Result:
     )
 
 
-def run_playing(seconds: float, minimized: bool, playlist: str | None = None) -> Result:
-    scenario = "playing" if minimized else "window"
-    extra = ["--autoplay"] + (["--start-minimized"] if minimized else [])
-    if playlist:
-        extra += ["--open-playlist", playlist]
+def run_playing(
+    seconds: float, minimized: bool, playlist: str | None = None, as_queue: bool = False
+) -> Result:
+    scenario = "queue" if as_queue else "playing" if minimized else "window"
+    if as_queue and playlist:
+        extra = ["--autoplay-playlist", playlist, "--show-queue"]
+    else:
+        extra = ["--autoplay"] + (["--start-minimized"] if minimized else [])
+        if playlist:
+            extra += ["--open-playlist", playlist]
     proc, ready_file, _ = launch(scenario, *extra)
     try:
         wait_ready(ready_file)
+        if playlist and not wait_for_log(scenario, "playlist loaded", 90):
+            print("   (warning: playlist never finished loading)")
         if not wait_for_log(scenario, "armed next track", 60):
             print("   (warning: next track never armed)")
-        if playlist and not wait_for_log(scenario, "playlist loaded", 60):
-            print("   (warning: playlist never finished loading)")
         root = psutil.Process(proc.pid)
         samples = []
         t0 = time.time()
@@ -266,7 +272,9 @@ def run_playing(seconds: float, minimized: bool, playlist: str | None = None) ->
     cpu_core = cpu_used(samples) / wall * 100
     cpus = psutil.cpu_count() or 1
     label = "playing, minimized" if minimized else "playing, window open"
-    if playlist:
+    if as_queue:
+        label = "playing a big playlist, queue panel open"
+    elif playlist:
         label += ", big playlist visible"
     return Result(
         label,
@@ -285,7 +293,9 @@ def run_playing(seconds: float, minimized: bool, playlist: str | None = None) ->
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenarios", nargs="*", default=["startup", "idle", "playing", "window"])
+    parser.add_argument(
+        "scenarios", nargs="*", default=["startup", "idle", "playing", "window", "queue"]
+    )
     parser.add_argument("--seconds", type=float, default=60)
     parser.add_argument(
         "--playlist",
@@ -314,6 +324,10 @@ def main() -> int:
             result = run_playing(args.seconds, minimized=True)
         elif scenario == "window":
             result = run_playing(min(args.seconds, 30), minimized=False, playlist=args.playlist)
+        elif scenario == "queue":
+            result = run_playing(
+                min(args.seconds, 30), minimized=False, playlist=args.playlist, as_queue=True
+            )
         else:
             parser.error(f"unknown scenario {scenario}")
         for key, value in result.values.items():
@@ -322,7 +336,7 @@ def main() -> int:
             print(f"     · {line}")
         LAST_BREAKDOWN.clear()
         results.append(result)
-        if scenario in ("playing", "window"):
+        if scenario in ("playing", "window", "queue"):
             for line in log_lines(scenario, "transition", "resolved", "WARNING", "ERROR")[-8:]:
                 print("   log:", line[:160])
 

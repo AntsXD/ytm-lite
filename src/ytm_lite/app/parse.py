@@ -75,6 +75,8 @@ def album_ref(raw: Any) -> AlbumRef | None:
 
 
 def track(raw: Raw) -> Track | None:
+    """A playlist/album track, or a watch-playlist (radio) track, which names its
+    duration "length" and its thumbnails "thumbnail"."""
     video_id = _str(raw.get("videoId"))
     if video_id is None:
         return None
@@ -83,8 +85,9 @@ def track(raw: Raw) -> Track | None:
         title=_str(raw.get("title")) or "Untitled",
         artists=artists(raw.get("artists")),
         album=album_ref(raw.get("album")),
-        duration=to_int(raw.get("duration_seconds")) or parse_duration(raw.get("duration")),
-        thumbnail=thumbnail(raw.get("thumbnails")),
+        duration=to_int(raw.get("duration_seconds"))
+        or parse_duration(raw.get("duration") or raw.get("length")),
+        thumbnail=thumbnail(raw.get("thumbnails") or raw.get("thumbnail")),
         available=raw.get("isAvailable", True) is not False,
         explicit=bool(raw.get("isExplicit")),
         set_video_id=_str(raw.get("setVideoId")),

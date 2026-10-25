@@ -14,7 +14,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 from ytm_worker.imports import IMPORT_LOCK
 from ytm_worker.jsruntime import JsRuntime
@@ -37,6 +37,12 @@ FALLBACK_LIFETIME = 4 * 3600
 FORWARDED_HEADERS = ("User-Agent", "Referer")
 
 _EXPIRE_RE = re.compile(r"[?&/]expire[=/](\d+)")
+
+
+class Attempt(NamedTuple):
+    clients: tuple[str, ...]  # empty: yt-dlp's default clients
+    use_js: bool  # allow the JS challenge solver
+    cookies: bool  # send the signed-in cookies
 
 
 class ResolveError(Exception):
@@ -171,10 +177,11 @@ class Resolver:
     ) -> None:
         self.config = config
         self._runtime = runtime
-        self._ydl: dict[bool, Any] = {}  # keyed by "JS runtime enabled"
+        self._ydl: dict[tuple[bool, bool], Any] = {}  # keyed by (use JS, send cookies)
 
-    def _client(self, use_js: bool) -> Any:
-        if use_js not in self._ydl:
+    def _client(self, use_js: bool, cookies: bool) -> Any:
+        key = (use_js, cookies)
+        if key not in self._ydl:
             with IMPORT_LOCK:
                 from yt_dlp import YoutubeDL
                 from yt_dlp.extractor.youtube import YoutubeIE
@@ -193,40 +200,49 @@ class Resolver:
                 # An empty dict disables JS runtimes (yt-dlp's default would look for Deno).
                 "js_runtimes": runtime.as_ytdlp_option() if runtime else {},
             }
-            if self.config.cookies:
+            if cookies and self.config.cookies:
                 params["cookiefile"] = io.StringIO(self.config.cookies)
             ydl = YoutubeDL(params, auto_init=False)
             ydl.add_info_extractor(YoutubeIE())
-            self._ydl[use_js] = ydl
-        return self._ydl[use_js]
+            self._ydl[key] = ydl
+        return self._ydl[key]
 
-    def attempts(self) -> list[tuple[tuple[str, ...], bool]]:
-        """(player clients, use JS runtime) to try in order; () means yt-dlp's defaults."""
+    def attempts(self, fast: bool = False) -> list[Attempt]:
+        """Client sets to try in order; empty clients mean yt-dlp's defaults.
+
+        `fast` (signed in): start with the signed-out path, which needs no JS challenge
+        and returns in ~1.5 s, at standard quality. The Premium path is the fallback.
+        """
         if self.config.player_clients:
-            return [(self.config.player_clients, True)]
+            return [Attempt(self.config.player_clients, True, True)]
+        anonymous = Attempt(ANONYMOUS_CLIENTS, False, False)
         if self.config.signed_in:
-            return [(SIGNED_IN_CLIENTS, True), ((), True)]
-        return [(ANONYMOUS_CLIENTS, False), ((), True)]
+            premium = [Attempt(SIGNED_IN_CLIENTS, True, True), Attempt((), True, True)]
+            return [anonymous, *premium] if fast else premium
+        return [anonymous, Attempt((), True, False)]
 
-    def resolve(self, video_id: str, format_override: str | None = None) -> StreamDict:
+    def resolve(
+        self, video_id: str, format_override: str | None = None, fast: bool = False
+    ) -> StreamDict:
         last: ResolveError | None = None
-        for clients, use_js in self.attempts():
+        for attempt in self.attempts(fast):
             try:
-                return self._extract(video_id, clients, use_js, format_override)
+                return self._extract(video_id, attempt, format_override)
             except ResolveError as exc:
                 last = exc
                 if exc.kind is not ErrorKind.EXTRACTION:
                     raise
-                log.info("no audio with clients %s; trying the next set", clients or "default")
+                log.info(
+                    "no audio with clients %s; trying the next set", attempt.clients or "default"
+                )
         assert last is not None
         raise last
 
-    def _extract(
-        self, video_id: str, clients: tuple[str, ...], use_js: bool, format_override: str | None
-    ) -> StreamDict:
+    def _extract(self, video_id: str, attempt: Attempt, format_override: str | None) -> StreamDict:
         from yt_dlp.utils import DownloadError
 
-        ydl = self._client(use_js)
+        clients, use_js = attempt.clients, attempt.use_js
+        ydl = self._client(use_js, attempt.cookies)
         youtube_args: dict[str, list[str]] = {"skip": ["hls", "dash"]}
         if clients:
             youtube_args["player_client"] = list(clients)

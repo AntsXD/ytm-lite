@@ -11,7 +11,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from ytm_lite.app.api import Api, ApiError, ApiErrorKind
 from ytm_lite.app.library_cache import LibraryCache
@@ -32,6 +32,13 @@ T = TypeVar("T")
 
 FIRST_PAGE = 100
 MEMORY_PLAYLISTS = 4
+RETRY_DELAY_MS = 5000  # a failed full playlist load is tried once more after this
+
+_REASONS = {
+    ApiErrorKind.NETWORK: "no connection to YouTube",
+    ApiErrorKind.SERVER: "YouTube answered with an error",
+    ApiErrorKind.PARSE: "YouTube sent a page this version can't read",
+}
 
 
 class Library(QObject):
@@ -84,7 +91,8 @@ class Library(QObject):
                 self._session.handle_auth_failure()
                 return
             log.warning("loading %s failed: %s", what, exc)
-            self.message.emit(f"Couldn't load {what}: {exc}")
+            reason = _REASONS.get(exc.kind) if isinstance(exc, ApiError) else None
+            self.message.emit(f"Couldn't load {what}" + (f": {reason}" if reason else ""))
 
         return self._guard(on_error)
 
@@ -233,7 +241,7 @@ class Library(QObject):
             on_error=self._failed(title),
         )
 
-    def _fetch_full(self, playlist_id: str, title: str) -> None:
+    def _fetch_full(self, playlist_id: str, title: str, *, retry: bool = True) -> None:
         if playlist_id in self._fetching:
             return
         if playlist_id == LIKED_SONGS_ID and not self._api.signed_in:
@@ -249,6 +257,18 @@ class Library(QObject):
 
         def failed(exc: Exception) -> None:
             self._fetching.discard(playlist_id)
+            if retry and not (isinstance(exc, ApiError) and exc.kind is ApiErrorKind.AUTH):
+                # YouTube now and then answers with a page ytmusicapi can't read (seen
+                # for Liked Songs right after a cookie refresh); a second try works.
+                log.info("loading %s failed (%s); trying again", title, exc)
+                generation = self._generation
+
+                def again() -> None:
+                    if generation == self._generation:
+                        self._fetch_full(playlist_id, title, retry=False)
+
+                QTimer.singleShot(RETRY_DELAY_MS, self, again)
+                return
             self._failed(title)(exc)
 
         self._workers.submit(

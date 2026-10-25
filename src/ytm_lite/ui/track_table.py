@@ -20,7 +20,15 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor, QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPalette
+from PySide6.QtGui import (
+    QColor,
+    QGuiApplication,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPalette,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -36,6 +44,7 @@ from PySide6.QtWidgets import (
 from ytm_lite.app.images import ImageLoader
 from ytm_lite.app.liked import LikedIndex
 from ytm_lite.app.models import Track, format_duration
+from ytm_lite.app.playback import PlaybackController
 from ytm_lite.ui.theme import ACCENT
 
 ROW_HEIGHT = 44
@@ -247,10 +256,12 @@ class TrackTable(QTableView):
         model: TrackTableModel,
         images: ImageLoader,
         liked: LikedIndex,
+        controller: PlaybackController,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._liked = liked
+        self._controller = controller
         self.setModel(model)
         self._model = model
         self.setItemDelegateForColumn(Column.TITLE, TitleDelegate(images, self))
@@ -298,6 +309,18 @@ class TrackTable(QTableView):
         self._repaint.timeout.connect(self.viewport().update)
         images.loaded.connect(self._image_loaded)
 
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._fit_columns()
+
+    def _fit_columns(self) -> None:
+        """Split the width left by the fixed columns 2:1:1 between title, artist and album,
+        so a narrow window (say, with the queue open) never squeezes the title out."""
+        fixed = sum(self.columnWidth(c) for c in (Column.INDEX, Column.DURATION, Column.LIKED))
+        side = max(80, min(260, (self.viewport().width() - fixed) // 4))
+        for column in (Column.ARTIST, Column.ALBUM):
+            self.setColumnWidth(column, side)
+
     def _image_loaded(self, _key: str) -> None:
         self._repaint.start()
 
@@ -312,18 +335,37 @@ class TrackTable(QTableView):
             return
         super().keyPressEvent(event)
 
+    def _selected_tracks(self, row: int) -> list[Track]:
+        """The selected rows in order if `row` is among them, else just that row."""
+        rows = sorted({i.row() for i in self.selectionModel().selectedRows()})
+        if row not in rows:
+            rows = [row]
+        return [t for r in rows if (t := self._model.track(r)) is not None and t.available]
+
     def _context_menu(self, pos: QPoint) -> None:
         index = self.indexAt(pos)
         track = self._model.track(index.row())
         if track is None:
             return
+        tracks = self._selected_tracks(index.row())
+        controller = self._controller
         menu = QMenu(self)
         play = menu.addAction("Play")
         play.setEnabled(track.available)
         play.triggered.connect(lambda: self._play(index.row()))
+        many = f" ({len(tracks)} songs)" if len(tracks) > 1 else ""
+        play_next = menu.addAction(f"Play next{many}")
+        play_next.setEnabled(bool(tracks))
+        play_next.triggered.connect(lambda: controller.play_next(tracks))
+        add = menu.addAction(f"Add to queue{many}")
+        add.setEnabled(bool(tracks))
+        add.triggered.connect(lambda: controller.add_to_queue(tracks))
+        radio = menu.addAction("Start radio")
+        radio.setEnabled(track.available)
+        radio.triggered.connect(lambda: controller.start_radio(track))
+        menu.addSeparator()
         like_text = "Remove from liked songs" if self._liked.is_liked(track.video_id) else "Like"
         menu.addAction(like_text).triggered.connect(lambda: self._liked.toggle(track))
-        menu.addSeparator()
         menu.addAction("Copy link").triggered.connect(
             lambda: QGuiApplication.clipboard().setText(track.link)
         )

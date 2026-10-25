@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWi
 from ytm_lite.app.dev import TEST_TRACKS
 from ytm_lite.app.images import ImageLoader
 from ytm_lite.app.liked import LikedIndex
+from ytm_lite.app.playback import PlaybackController
 from ytm_lite.ui.track_table import TrackTable, TrackTableModel
 
 
@@ -17,7 +18,11 @@ class SignedOutPage(QWidget):
     play_requested = Signal(object, int)  # list[Track], start row
 
     def __init__(
-        self, images: ImageLoader, liked: LikedIndex, parent: QWidget | None = None
+        self,
+        images: ImageLoader,
+        liked: LikedIndex,
+        controller: PlaybackController,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         heading = QLabel("Sign in to see your library")
@@ -40,7 +45,7 @@ class SignedOutPage(QWidget):
         tracks_label.setObjectName("Dim")
         model = TrackTableModel(liked, self)
         model.set_tracks(TEST_TRACKS)
-        table = TrackTable(model, images, liked)
+        table = TrackTable(model, images, liked, controller)
         table.play_requested.connect(lambda r: self.play_requested.emit(list(TEST_TRACKS), r))
 
         layout = QVBoxLayout(self)

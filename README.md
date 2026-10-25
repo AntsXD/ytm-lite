@@ -3,8 +3,8 @@
 A lightweight native YouTube Music desktop client, built to sit next to RAM-hungry games.
 Qt Widgets UI, libmpv for audio, no embedded browser of any kind.
 
-**Status:** milestone 2 of 5 (sign-in and library). Next: the full play queue and
-now-playing controls (milestone 3).
+**Status:** milestone 3 of 5 (play queue and now-playing bar). Next: search, album and artist
+pages, the tray and media keys (milestone 4).
 
 ## How it works
 
@@ -21,7 +21,13 @@ ytm-lite (player process)                      worker (started on demand)
   ytmusicapi and `requests` cost 60–85 MB, and parsing big API responses leaves Python's heap
   inflated for good; in a short-lived process that memory goes back to Windows.
 - **mpv's playlist only ever holds `[current, next]`.** The next track is resolved as soon as the
-  current one starts and handed to mpv, so track changes are gapless.
+  current one starts and handed to mpv, so track changes are gapless. Any queue edit that changes
+  what comes next (play next, a drag, shuffle, repeat) swaps the prepared track.
+- **Signed in, the track you start yourself starts fast, everything after it is Premium.** A
+  double-click (or Next/Previous with nothing prepared) resolves the quick signed-out way:
+  ~1.5 s, standard quality (Opus ~134 kbps). The tracks that follow are resolved in Premium
+  (Opus ~256 kbps) in the background while the current one plays, where the ~4 s it takes
+  doesn't matter. The quality label in the bar shows which one is playing.
 - **Signed out**, streams come from YouTube's `visionos` client, which needs no JavaScript
   challenge solving (no Deno/Node process at all). **Signed in**, the `web_music` client serves
   the Premium formats (Opus ~256 kbps) and needs a JS runtime: Deno ships as a dependency; Node ≥ 22
@@ -47,8 +53,18 @@ sha256 and puts `libmpv-2.dll` in `vendor/`. On Linux, install libmpv from your 
 uv run python -m ytm_lite
 ```
 
+- Double-click a track to play it; the rest of the list becomes the queue. Right-click a track
+  (or a selection) for Play next, Add to queue, Start radio, Like and Copy link.
+- The list button at the right of the bar opens the queue: drag songs to reorder them, Delete
+  removes the selection, double-click jumps to a song. With **Autoplay** on, radio suggestions
+  for the last song are added when two songs are left.
+- Shortcuts: Space play/pause, Ctrl+→ / Ctrl+← next/previous, Ctrl+L like, Ctrl+Q quit.
+- The queue, your place in it (paused), shuffle and repeat, volume and the window layout come back
+  at the next start. They are saved in `queue.json` and `state.json` next to `settings.json`.
+
 Ctrl+Shift+D toggles the debug overlay (memory per process, threads, worker and libmpv state,
-cover cache, last track-transition gap). Options: `--debug` (verbose log), `--start-minimized`.
+queue, cover cache, last track-transition gap). Options: `--debug` (verbose log),
+`--start-minimized`.
 
 Logs go to `%LOCALAPPDATA%\ytm-lite\Logs\ytm-lite.log` (1 MB × 3, secrets redacted).
 `YTM_LITE_HOME=<folder>` puts config, cache and logs in one folder instead.
@@ -95,8 +111,8 @@ Diagnostics:
 ## Measure
 
 ```bash
-uv run python tools/measure.py                       # startup, idle, playing, window
-uv run python tools/measure.py playing window --real-profile --playlist LM
+uv run python tools/measure.py                       # startup, idle, playing, window, queue
+uv run python tools/measure.py playing window queue --real-profile --playlist LM
 uv run python tools/spikes/s2_libmpv.py --variant small
 uv run python tools/spikes/s3_qt_tray.py
 ```
@@ -106,12 +122,39 @@ with `--real-profile`, your own signed-in one) and samples the whole process tre
 with psutil. **RSS** is the Windows working set; **private** is private bytes. "Steady" is
 measured after the worker's idle exit; "peak" includes the worker and its JS runtime. The venv's
 `python.exe` redirector process is excluded because a packaged build doesn't have it. The
-`window` scenario opens a large playlist (a public 462-track one, or `LM` = your Liked Songs).
+`window` scenario opens a large playlist (a public 462-track one, or `LM` = your Liked Songs)
+while the test tracks play; `queue` plays that playlist itself with the queue panel open.
+Measurement runs never save the playback session, so `--real-profile` leaves your queue alone.
 
 ## Measured numbers
 
 Windows 11, Python 3.14.7, PySide6 6.12.0, mpv 0.41 (shinchiro 2026-10-21), yt-dlp 2026.10.21,
 ytmusicapi 1.12.3, running from source.
+
+### Milestone 3 (2026-10-25)
+
+| Spec target | Signed in (677-song library, Premium) | Signed out | |
+|---|---|---|---|
+| Idle < 80 MB | measured in M4, with tray mode | 88.7 MB RSS / 49.4 MB private with the window open | M4 |
+| Playing, window open, 200+ track list < 150 MB | 129.4 MB RSS / 84.0 MB private steady (Liked Songs on screen); 214 MB peak while the worker is up | 126.6 MB / 82.2 MB steady (public 462-track playlist); 202 MB peak | ✅ steady |
+| Same, that list playing as a queue with the queue panel open | 132.9 MB / 85.4 MB steady (677-song queue); 219 MB peak | 131.4 MB / 85.1 MB steady (462-song queue); 200 MB peak | ✅ steady |
+| Playing, minimized | 131.0 MB / 84.1 MB steady; 217 MB peak | 107.7 MB / 71.3 MB steady; 167 MB peak | ✅ steady |
+| CPU minimized < 1% | 3.6% of one core *including two resolves*; 0.18% of 20 logical CPUs | 2.4% of one core including two resolves; 0.12% of 20 logical CPUs | ✅ |
+| Cold start < 2 s | 1.09 s median (cached library shown at once) | 1.09 s median | ✅ |
+| Gapless track change | 3 ms from the standard-quality first track into the Premium one | 1 ms (M1) | ✅ |
+| Premium audio | the clicked track: format 251, Opus 127–134 kbps in 1.4–1.7 s; every track after it: format 774, Opus 260–275 kbps, resolved in 3.6–4.4 s while the previous one plays | format 251, Opus ~134 kbps | ✅ |
+
+Compared with milestone 2, the queue, the new bar and session saving cost 2–3 MB; a queue of a few
+hundred songs with the queue panel open adds another 4–5 MB.
+
+Findings that shaped milestone 3:
+
+| Finding | Decision |
+|---|---|
+| Signed in, a click took ~4 s to start: the Premium path waits for the watch page, the player API and Deno's JS challenge | The track you start resolves the signed-out way (no cookies, no JS: ~1.5 s, standard quality); the tracks after it are prefetched in Premium. The URL cache keeps the two kinds apart, so a standard URL is never prepared as the next track |
+| QtSvg (module + image plugin) just to draw a dozen toolbar icons | Icons are Material Design path data drawn with QPainter (a 60-line path parser) |
+| A 5,000-song queue is ~1 MB of JSON; rewriting it every 30 s while playing would be wasted work | Two files: `queue.json` only when the queue itself changes, `state.json` (position, cursor, modes, layout) often |
+| YouTube once answered the Liked Songs request right after a Firefox cookie refresh with a page ytmusicapi can't read; the next try worked | Full playlist loads are retried once after 5 s, and load errors are shown in plain words instead of ytmusicapi's message |
 
 ### Milestone 2 (2026-10-25)
 
@@ -157,3 +200,8 @@ Spike results that shaped the design:
 | S2 gapless | With `gapless-audio=yes` and fixed 48 kHz stereo output, Opus → AAC keeps the device open | Fixed output format |
 | S3 Qt + tray | Window + 200-row table + tray: 69 MB RSS / 33 MB private. `EmptyWorkingSet` drops RSS to ~1 MB (private unchanged); destroying the window frees ~5 MB private | Tray mode trims the working set; report private bytes too |
 | S4 Nuitka | Standalone build (MSVC 14.5) runs under Smart App Control; first launch 3.9 s (Windows scanning the new exe), then 0.47 s | Keep Nuitka for milestone 5 |
+
+## Credits
+
+Toolbar icons are path data from Google's [Material Icons](https://github.com/google/material-design-icons)
+(Apache License 2.0).

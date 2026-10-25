@@ -10,6 +10,7 @@ from ytm_worker.resolve import (
     ANONYMOUS_CLIENTS,
     FALLBACK_LIFETIME,
     SIGNED_IN_CLIENTS,
+    Attempt,
     ResolveError,
     Resolver,
     ResolverConfig,
@@ -95,29 +96,41 @@ def test_stream_without_formats_raises() -> None:
     assert excinfo.value.kind is ErrorKind.EXTRACTION
 
 
+ANONYMOUS = Attempt(ANONYMOUS_CLIENTS, use_js=False, cookies=False)
+PREMIUM = [Attempt(SIGNED_IN_CLIENTS, True, True), Attempt((), True, True)]
+
+
 def test_attempts_anonymous_avoids_js_first() -> None:
     resolver = Resolver(ResolverConfig(cachedir="c"))
-    assert resolver.attempts() == [(ANONYMOUS_CLIENTS, False), ((), True)]
+    assert resolver.attempts() == [ANONYMOUS, Attempt((), True, False)]
+    assert resolver.attempts(fast=True) == resolver.attempts()  # signed out it's all one
 
 
 def test_attempts_signed_in_uses_web_music() -> None:
     config = ResolverConfig(cachedir="c", cookies="# Netscape HTTP Cookie File\n")
     assert config.signed_in
-    assert Resolver(config).attempts() == [(SIGNED_IN_CLIENTS, True), ((), True)]
+    assert Resolver(config).attempts() == PREMIUM
+
+
+def test_fast_attempts_try_the_anonymous_path_first() -> None:
+    config = ResolverConfig(cachedir="c", cookies="# Netscape HTTP Cookie File\n")
+    # No cookies and no JS challenge for the quick try; Premium stays the fallback.
+    assert Resolver(config).attempts(fast=True) == [ANONYMOUS, *PREMIUM]
 
 
 def test_attempts_user_override() -> None:
     config = ResolverConfig(cachedir="c", player_clients=("tv",))
-    assert Resolver(config).attempts() == [(("tv",), True)]
+    assert Resolver(config).attempts() == [Attempt(("tv",), True, True)]
+    assert Resolver(config).attempts(fast=True) == [Attempt(("tv",), True, True)]
 
 
 def test_resolve_falls_back_only_on_extraction_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     resolver = Resolver(ResolverConfig(cachedir="c"), lambda: JsRuntime("deno", "d", "2.9.8"))
     calls: list[tuple[str, ...]] = []
 
-    def fake_extract(video_id: str, clients: tuple[str, ...], use_js: bool, fmt: str | None) -> Any:
-        calls.append(clients)
-        if clients:
+    def fake_extract(video_id: str, attempt: Attempt, fmt: str | None) -> Any:
+        calls.append(attempt.clients)
+        if attempt.clients:
             raise ResolveError(ErrorKind.EXTRACTION, "bot check")
         return stream_from_info(video_id, _info())
 
@@ -127,8 +140,8 @@ def test_resolve_falls_back_only_on_extraction_errors(monkeypatch: pytest.Monkey
 
     calls.clear()
 
-    def unavailable(video_id: str, clients: tuple[str, ...], use_js: bool, fmt: str | None) -> Any:
-        calls.append(clients)
+    def unavailable(video_id: str, attempt: Attempt, fmt: str | None) -> Any:
+        calls.append(attempt.clients)
         raise ResolveError(ErrorKind.UNAVAILABLE, "gone")
 
     monkeypatch.setattr(resolver, "_extract", unavailable)

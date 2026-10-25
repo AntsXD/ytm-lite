@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 
+from ytm_lite.app import library as library_module
 from ytm_lite.app.api import Api, ApiError, ApiErrorKind
 from ytm_lite.app.library import FIRST_PAGE, Library
 from ytm_lite.app.library_cache import LibraryCache
@@ -26,6 +27,7 @@ class FakeApi:
         self.playlists: list[PlaylistSummary] = [PlaylistSummary("PL1", "Mine")]
         self.calls: list[tuple[str, int | None]] = []
         self.fail_account: ApiError | None = None
+        self.fail_playlist: list[ApiError] = []  # raised by the next playlist() calls
 
     def account_info(self) -> Account:
         if self.fail_account:
@@ -45,6 +47,8 @@ class FakeApi:
         self, playlist_id: str, limit: int | None, *, background: bool = False
     ) -> Playlist:
         self.calls.append((playlist_id, limit))
+        if self.fail_playlist:
+            raise self.fail_playlist.pop(0)
         count = 250
         n = count if limit is None else min(limit, count)
         tracks = tuple(Track(f"{playlist_id}-{i}", f"T{i}") for i in range(n))
@@ -124,3 +128,28 @@ def test_suddenly_empty_library_counts_as_expired(qtbot: QtBot, rig: Any) -> Non
     library.refresh()
     qtbot.waitUntil(lambda: session.auth_failures == 1, timeout=3000)
     assert library.playlists == [PlaylistSummary("PL1", "Mine")]
+
+
+def test_a_failed_full_load_is_tried_once_more(
+    qtbot: QtBot, rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    library, api, _session, _cache = rig
+    monkeypatch.setattr(library_module, "RETRY_DELAY_MS", 10)
+    messages: list[str] = []
+    library.message.connect(messages.append)
+    api.fail_playlist = [ApiError(ApiErrorKind.PARSE, "Unable to find 'twoColumnBrowse...'")]
+    library._fetch_full(LIKED_SONGS_ID, "Liked Songs")
+    qtbot.waitUntil(lambda: library._liked.is_liked(f"{LIKED_SONGS_ID}-249"), timeout=5000)
+    assert api.calls == [(LIKED_SONGS_ID, None), (LIKED_SONGS_ID, None)]
+    assert messages == []
+
+
+def test_a_second_failure_is_reported_plainly(qtbot: QtBot, rig: Any, monkeypatch: Any) -> None:
+    library, api, _session, _cache = rig
+    monkeypatch.setattr(library_module, "RETRY_DELAY_MS", 10)
+    messages: list[str] = []
+    library.message.connect(messages.append)
+    api.fail_playlist = [ApiError(ApiErrorKind.PARSE, "raw ytmusicapi text")] * 2
+    library._fetch_full("PL1", "Mix")
+    qtbot.waitUntil(lambda: bool(messages), timeout=5000)
+    assert messages == ["Couldn't load Mix: YouTube sent a page this version can't read"]

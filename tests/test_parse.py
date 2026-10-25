@@ -51,6 +51,24 @@ def test_track_tolerates_missing_and_odd_fields() -> None:
     assert track.album is None and track.artists == ()
 
 
+def test_watch_playlist_track() -> None:
+    """Radio tracks name their duration "length" and thumbnails "thumbnail"."""
+    raw = {
+        "videoId": "9mWr4c_ig54",
+        "title": "Foolish Of Me",
+        "length": "3:07",
+        "thumbnail": THUMBS,
+        "artists": [{"name": "Seven Lions", "id": "UCY"}],
+        "album": {"name": "Foolish Of Me", "id": "MPREb_C8"},
+        "videoType": "MUSIC_VIDEO_TYPE_ATV",
+    }
+    track = parse.track(raw)
+    assert track is not None
+    assert track.duration == 187
+    assert track.thumbnail == THUMBS[-1]["url"]
+    assert track.artist_text == "Seven Lions"
+
+
 def test_tracks_skips_garbage() -> None:
     assert len(parse.tracks([TRACK, None, "x", {"title": "no id"}, TRACK])) == 2
     assert parse.tracks(None) == ()

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWi
 from ytm_lite.app.images import ImageLoader, image_key
 from ytm_lite.app.liked import LikedIndex
 from ytm_lite.app.models import Playlist, Track, format_duration
+from ytm_lite.app.playback import PlaybackController
 from ytm_lite.ui.track_table import TrackTable, TrackTableModel
 
 HEADER_COVER = 120
@@ -23,6 +24,7 @@ class PlaylistPage(QWidget):
         title: str,
         images: ImageLoader,
         liked: LikedIndex,
+        controller: PlaybackController,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -62,7 +64,7 @@ class PlaylistPage(QWidget):
         header.addLayout(text, 1)
 
         self.model = TrackTableModel(liked, self)
-        self.table = TrackTable(self.model, images, liked)
+        self.table = TrackTable(self.model, images, liked, controller)
         self.table.play_requested.connect(self._play_from)
 
         layout = QVBoxLayout(self)
@@ -105,13 +107,13 @@ class PlaylistPage(QWidget):
     def _show_cover(self) -> None:
         pixmap = self._images.get(self._thumbnail, self._cover_px())
         if pixmap is not None:
-            self.cover.setPixmap(
-                pixmap.scaled(
-                    self.cover.size() * self.devicePixelRatioF(),
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+            scaled = pixmap.scaled(
+                self.cover.size() * self.devicePixelRatioF(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
             )
+            scaled.setDevicePixelRatio(self.devicePixelRatioF())  # sharp, not doubled, on HiDPI
+            self.cover.setPixmap(scaled)
 
     def _image_loaded(self, key: str) -> None:
         if self._thumbnail and key == image_key(self._thumbnail, self._cover_px()):

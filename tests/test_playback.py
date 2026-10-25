@@ -20,6 +20,11 @@ from ytm_lite.app.worker_client import WorkerProcess
 from ytm_worker.protocol import Priority
 
 NOW, PREFETCH = int(Priority.NOW), int(Priority.PREFETCH)
+FAST, BEST = True, False
+
+
+def track(video_id: str) -> Track:
+    return Track(video_id, video_id.upper(), duration=100)
 
 
 class FakePlayer(Player):
@@ -62,8 +67,9 @@ class FakePlayer(Player):
         self.pos = seconds
 
     def set_paused(self, paused: bool) -> None:
-        self._paused = paused
-        self.pause_changed.emit(paused)
+        if paused != self._paused:
+            self._paused = paused
+            self.pause_changed.emit(paused)
 
     def paused(self) -> bool:
         return self._paused
@@ -93,38 +99,62 @@ class FakePlayer(Player):
 
 
 class FakeResolver(ResolverClient):
+    """Resolves only when a test says so. Signed in by default, so that fast (standard)
+    and best (Premium) requests differ."""
+
     def __init__(self, cache_dir: Path) -> None:
         super().__init__(WorkerProcess(cache_dir))  # never started: request() is faked
-        self.requests: list[tuple[str, int]] = []
+        self.requests: list[tuple[str, int, bool]] = []
+        self.premium_account = True
+
+    @property
+    def signed_in(self) -> bool:
+        return self.premium_account
 
     def request(
         self,
         video_id: str,
         priority: Priority = Priority.NOW,
         *,
+        fast: bool = False,
         format_override: str | None = None,
     ) -> None:
-        self.requests.append((video_id, int(priority)))
-        self._pending[video_id] = int(priority)
+        fast = fast and self.signed_in
+        self.requests.append((video_id, int(priority), fast))
+        self._pending[(video_id, fast)] = int(priority)
 
-    def complete(self, video_id: str, *, wait: float = 0.0) -> StreamInfo:
+    def complete(self, video_id: str, *, fast: bool | None = None, wait: float = 0.0) -> StreamInfo:
+        """Answer a request: the fast one if it is pending, unless `fast` says otherwise."""
+        if fast is None:
+            fast = (video_id, True) in self._pending
         stream = StreamInfo(
             video_id=video_id,
-            url=f"https://x.googlevideo.com/{video_id}",
-            format_id="251",
+            url=f"https://x.googlevideo.com/{video_id}" + ("-fast" if fast else ""),
+            format_id="251" if fast else "774",
             codec="opus",
-            abr=134.0,
+            abr=134.0 if fast else 256.0,
             expires_at=time.time() + 6 * 3600,
             available_at=time.time() + wait if wait else None,
             http_headers={"User-Agent": "UA"},
+            premium=not fast,
+            fast=fast,
         )
-        self._cache[video_id] = stream
-        self._pending.pop(video_id, None)
+        self._pending.pop((video_id, fast), None)
+        self._store(stream)
         self.resolved.emit(video_id, stream)
         return stream
 
-    def fail(self, video_id: str, kind: str = "unavailable", message: str = "gone") -> None:
-        self._pending.pop(video_id, None)
+    def fail(
+        self,
+        video_id: str,
+        kind: str = "unavailable",
+        message: str = "gone",
+        *,
+        fast: bool | None = None,
+    ) -> None:
+        if fast is None:
+            fast = (video_id, True) in self._pending
+        self._pending.pop((video_id, fast), None)
         self.failed.emit(video_id, kind, message)
 
 
@@ -137,14 +167,19 @@ class Rig:
     current: list[str] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
     gaps: list[float] = field(default_factory=list)
+    streams: list[StreamInfo | None] = field(default_factory=list)
+    radio_seeds: list[str] = field(default_factory=list)
     extraction_failing: int = 0
 
     def play(self, *ids: str, start: int = 0) -> None:
-        self.controller.play_tracks([Track(i, i.upper(), duration=100) for i in ids], start)
+        self.controller.play_tracks([track(i) for i in ids], start)
 
     def state(self) -> PlaybackState:
         # A method, so mypy doesn't narrow the state across calls that change it.
         return self.controller.state
+
+    def ids(self) -> list[str]:
+        return [e.track.video_id for e in self.queue.items]
 
     @property
     def current_id(self) -> str | None:
@@ -157,7 +192,9 @@ def rig(qapp: QApplication, tmp_path: Path) -> Rig:
     player = FakePlayer()
     resolver = FakeResolver(tmp_path)
     queue = PlayQueue()
-    rig = Rig(PlaybackController(queue, resolver, player), player, resolver, queue)
+    controller = PlaybackController(queue, resolver, player)
+    controller.radio = False  # the radio tests turn it on
+    rig = Rig(controller, player, resolver, queue)
 
     def on_current(entry: Any) -> None:
         rig.current.append(entry.track.video_id if entry else "")
@@ -165,10 +202,12 @@ def rig(qapp: QApplication, tmp_path: Path) -> Rig:
     def on_failing() -> None:
         rig.extraction_failing += 1
 
-    rig.controller.current_changed.connect(on_current)
-    rig.controller.notice.connect(rig.notices.append)
-    rig.controller.transition_measured.connect(rig.gaps.append)
-    rig.controller.extraction_failing.connect(on_failing)
+    controller.current_changed.connect(on_current)
+    controller.notice.connect(rig.notices.append)
+    controller.transition_measured.connect(rig.gaps.append)
+    controller.stream_changed.connect(rig.streams.append)
+    controller.radio_wanted.connect(rig.radio_seeds.append)
+    controller.extraction_failing.connect(on_failing)
     return rig
 
 
@@ -181,21 +220,77 @@ def start_playing(rig: Rig, *ids: str) -> None:
         rig.resolver.complete(ids[1])
 
 
-def test_play_resolves_loads_and_arms_next(rig: Rig) -> None:
+# -- quality: the clicked track fast, everything after it Premium ---------------------
+
+
+def test_play_resolves_fast_then_prefetches_premium(rig: Rig) -> None:
     rig.play("a", "b", "c")
-    assert rig.resolver.requests == [("a", NOW)]
+    assert rig.resolver.requests == [("a", NOW, FAST)]
     assert rig.state() is PlaybackState.LOADING
     assert rig.current == ["a"]
 
     rig.resolver.complete("a")
-    assert rig.player.loads[-1] == ("https://x.googlevideo.com/a", False, {"user-agent": "UA"})
+    assert rig.player.loads[-1] == ("https://x.googlevideo.com/a-fast", False, {"user-agent": "UA"})
 
     rig.player.start(1)
     assert rig.state() is PlaybackState.PLAYING
-    assert rig.resolver.requests[-1] == ("b", PREFETCH)
+    stream = rig.streams[-1]
+    assert stream is not None and stream.fast
+    assert rig.resolver.requests[-1] == ("b", PREFETCH, BEST)
 
     rig.resolver.complete("b")
     assert rig.player.loads[-1][:2] == ("https://x.googlevideo.com/b", True)
+
+
+def test_signed_out_never_asks_for_fast(rig: Rig) -> None:
+    rig.resolver.premium_account = False
+    rig.play("a", "b")
+    assert rig.resolver.requests == [("a", NOW, BEST)]
+
+
+def test_a_fast_stream_is_never_armed(rig: Rig) -> None:
+    rig.play("a", "b")
+    rig.resolver.complete("b", fast=True)  # e.g. clicked earlier: cached in standard quality
+    rig.resolver.complete("a")
+    rig.player.start(1)
+    assert rig.resolver.requests[-1] == ("b", PREFETCH, BEST)
+    assert len(rig.player.loads) == 1
+    rig.resolver.complete("b", fast=False)
+    assert rig.player.loads[-1][:2] == ("https://x.googlevideo.com/b", True)
+
+
+def test_track_ending_before_its_prefetch_waits_for_premium(rig: Rig) -> None:
+    rig.play("a", "b")
+    rig.resolver.complete("a")
+    rig.player.start(1)
+    rig.player.end(1, "eof")
+    assert rig.current_id == "b"
+    assert rig.resolver.requests[-1] == ("b", NOW, BEST)
+    rig.resolver.complete("b")
+    assert rig.player.loads[-1][:2] == ("https://x.googlevideo.com/b", False)
+
+
+def test_failure_of_one_kind_waits_for_the_other(rig: Rig) -> None:
+    rig.play("a", "b")
+    rig.resolver.request("a", Priority.PREFETCH)  # a Premium resolve is out too
+    rig.resolver.fail("a", "extraction", "bot check", fast=True)
+    assert rig.state() is PlaybackState.LOADING and rig.current_id == "a"
+    assert not rig.notices
+    rig.resolver.complete("a", fast=False)
+    assert rig.player.loads[-1][0] == "https://x.googlevideo.com/a"
+
+
+def test_error_retry_keeps_the_quality(rig: Rig) -> None:
+    start_playing(rig, "a", "b")
+    rig.player.end(1, "eof")
+    rig.player.start(2)  # b, armed in Premium
+    rig.player.pos = 10.0
+    rig.controller.position()
+    rig.player.end(2, "error", "HTTP error 403")
+    assert rig.resolver.requests[-1] == ("b", NOW, BEST)
+
+
+# -- moving through the queue ---------------------------------------------------------
 
 
 def test_gapless_transition_follows_start_file(rig: Rig) -> None:
@@ -204,9 +299,11 @@ def test_gapless_transition_follows_start_file(rig: Rig) -> None:
     rig.player.start(2)
     assert rig.current_id == "b"
     assert rig.current == ["a", "b"]
-    assert rig.resolver.requests[-1] == ("c", PREFETCH)
+    assert rig.resolver.requests[-1] == ("c", PREFETCH, BEST)
     assert len(rig.gaps) == 1 and rig.gaps[0] >= 0
     assert "playlist_clear" in rig.player.calls
+    stream = rig.streams[-1]
+    assert stream is not None and stream.premium
 
 
 def test_next_uses_armed_entry(rig: Rig) -> None:
@@ -217,27 +314,49 @@ def test_next_uses_armed_entry(rig: Rig) -> None:
     assert len(rig.player.loads) == 2  # nothing reloaded
 
 
-def test_next_without_armed_entry_resolves_now(rig: Rig) -> None:
+def test_next_while_paused_plays(rig: Rig) -> None:
+    start_playing(rig, "a", "b")
+    rig.controller.toggle_pause()
+    assert rig.player.paused()
+    rig.controller.next()
+    assert not rig.player.paused()
+
+
+def test_next_without_armed_entry_resolves_fast(rig: Rig) -> None:
     rig.play("a", "b")
     rig.resolver.complete("a")
     rig.player.start(1)
     rig.controller.next()
     assert "stop" in rig.player.calls
-    assert rig.resolver.requests[-1] == ("b", NOW)
+    assert rig.resolver.requests[-1] == ("b", NOW, FAST)
     assert rig.state() is PlaybackState.LOADING
 
 
-def test_end_of_queue_stops(rig: Rig) -> None:
+def test_end_of_queue_stops_and_play_starts_over(rig: Rig) -> None:
     start_playing(rig, "a")
+    rig.player.pos = 99.0
+    rig.controller.position()
     rig.player.end(1, "eof")
     assert rig.state() is PlaybackState.STOPPED
+    rig.controller.toggle_pause()
+    assert rig.current_id == "a"
+    assert "start" not in rig.player.loads[-1][2]  # from the beginning
+
+
+def test_play_after_the_end_continues_with_added_songs(rig: Rig) -> None:
+    start_playing(rig, "a")
+    rig.player.end(1, "eof")
+    rig.controller.add_to_queue([track("x")])
+    rig.controller.toggle_pause()
+    assert rig.current_id == "x"
+    assert rig.resolver.requests[-1] == ("x", NOW, FAST)
 
 
 def test_unavailable_track_is_skipped(rig: Rig) -> None:
     rig.play("a", "b")
     rig.resolver.fail("a", "unavailable")
     assert rig.notices and "A" in rig.notices[0]
-    assert rig.resolver.requests[-1] == ("b", NOW)
+    assert rig.resolver.requests[-1] == ("b", NOW, FAST)  # still someone waiting
     assert rig.current_id == "b"
 
 
@@ -247,7 +366,7 @@ def test_repeated_extraction_failures_stop_playback(rig: Rig) -> None:
         rig.resolver.fail(video_id, "extraction", "broken")
     assert rig.extraction_failing == 1
     assert rig.state() is PlaybackState.STOPPED
-    assert ("d", NOW) not in rig.resolver.requests
+    assert not any(r[0] == "d" for r in rig.resolver.requests)
 
 
 def test_playback_error_retries_once_at_position_then_skips(rig: Rig) -> None:
@@ -258,15 +377,24 @@ def test_playback_error_retries_once_at_position_then_skips(rig: Rig) -> None:
     rig.controller.position()
     rig.player.end(1, "error", "HTTP error 403")
     assert rig.resolver.cached("a") is None
-    assert rig.resolver.requests[-1] == ("a", NOW)
+    assert rig.resolver.requests[-1] == ("a", NOW, FAST)
 
     rig.resolver.complete("a")
     assert rig.player.loads[-1][2]["start"] == "42.000"
     entry_id = rig.player.entries[0]
     rig.player.start(entry_id)
     rig.player.end(entry_id, "error", "HTTP error 403")
-    assert rig.resolver.requests[-1] == ("b", NOW)
+    assert rig.resolver.requests[-1] == ("b", NOW, FAST)
     assert any("playback failed" in n for n in rig.notices)
+
+
+def test_armed_track_failing_after_the_current_ended_is_retried_now(rig: Rig) -> None:
+    start_playing(rig, "a", "b", "c")  # "b" is armed as entry 2
+    rig.player.end(1, "eof")
+    rig.player.end(2, "error", "HTTP error 403")
+    assert rig.current_id == "b"
+    assert rig.state() is PlaybackState.LOADING
+    assert rig.resolver.requests[-1] == ("b", NOW, BEST)
 
 
 def test_stream_error_turns_eof_into_error(rig: Rig) -> None:
@@ -275,7 +403,7 @@ def test_stream_error_turns_eof_into_error(rig: Rig) -> None:
     rig.player.start(1)
     rig.player.stream_error.emit("ffmpeg: HTTP error 403 Forbidden")
     rig.player.end(1, "eof")
-    assert rig.resolver.requests[-1] == ("a", NOW)
+    assert rig.resolver.requests[-1] == ("a", NOW, FAST)
 
 
 def test_available_at_delays_the_load(rig: Rig) -> None:
@@ -300,7 +428,7 @@ def test_repeat_change_drops_stale_armed_entry(rig: Rig) -> None:
     rig.resolver.complete("b")
     rig.player.start(1)
     rig.controller.set_repeat(RepeatMode.ALL)
-    assert rig.resolver.requests[-1] == ("a", PREFETCH)
+    assert rig.resolver.requests[-1] == ("a", PREFETCH, BEST)
     rig.resolver.complete("a")
     assert rig.player.loads[-1][1] is True  # "a" armed after "b"
     rig.controller.set_repeat(RepeatMode.OFF)
@@ -317,3 +445,168 @@ def test_pause_then_release_resumes_from_position(rig: Rig) -> None:
     assert rig.state() is PlaybackState.PAUSED
     rig.controller.toggle_pause()
     assert rig.player.loads[-1][2]["start"] == "30.000"
+
+
+def test_double_click_while_paused_plays(rig: Rig) -> None:
+    start_playing(rig, "a", "b")
+    rig.controller.toggle_pause()
+    rig.play("c")
+    rig.resolver.complete("c")
+    assert not rig.player.paused()
+
+
+# -- editing the queue ------------------------------------------------------------------
+
+
+def test_play_next_replaces_the_armed_entry(rig: Rig) -> None:
+    start_playing(rig, "a", "b", "c")
+    rig.controller.play_next([track("x")])
+    assert rig.ids() == ["a", "x", "b", "c"]
+    assert rig.player.calls[-1] == "playlist_clear"
+    assert rig.resolver.requests[-1] == ("x", PREFETCH, BEST)
+    assert any("will play next" in n for n in rig.notices)
+    rig.resolver.complete("x")
+    assert rig.player.loads[-1][:2] == ("https://x.googlevideo.com/x", True)
+
+
+def test_removing_the_armed_entry_arms_the_following_one(rig: Rig) -> None:
+    start_playing(rig, "a", "b", "c")
+    rig.controller.remove([rig.queue.items[1].uid])
+    assert rig.ids() == ["a", "c"]
+    assert rig.player.calls[-1] == "playlist_clear"
+    assert rig.resolver.requests[-1] == ("c", PREFETCH, BEST)
+
+
+def test_removing_the_current_entry_plays_the_next(rig: Rig) -> None:
+    start_playing(rig, "a", "b")
+    rig.controller.remove([rig.queue.items[0].uid])
+    assert rig.current_id == "b"
+    assert rig.player.loads[-1][:2] == ("https://x.googlevideo.com/b", False)  # cached
+
+
+def test_removing_the_current_entry_while_paused_stays_stopped(rig: Rig) -> None:
+    start_playing(rig, "a", "b")
+    rig.controller.toggle_pause()
+    loads = len(rig.player.loads)
+    rig.controller.remove([rig.queue.items[0].uid])
+    assert rig.current_id == "b" and rig.current[-1] == "b"
+    assert rig.state() is PlaybackState.STOPPED
+    assert len(rig.player.loads) == loads
+
+
+def test_move_changes_what_is_armed(rig: Rig) -> None:
+    start_playing(rig, "a", "b", "c")
+    rig.controller.move(rig.queue.items[2].uid, 1)
+    assert rig.ids() == ["a", "c", "b"]
+    assert rig.resolver.requests[-1] == ("c", PREFETCH, BEST)
+
+
+def test_move_next(rig: Rig) -> None:
+    start_playing(rig, "a", "b", "c", "d")
+    rig.controller.move_next(rig.queue.items[3].uid)
+    assert rig.ids() == ["a", "d", "b", "c"]
+
+
+def test_adding_to_an_empty_queue_starts_playing(rig: Rig) -> None:
+    rig.controller.add_to_queue([track("x"), Track("u", "U", available=False)])
+    assert rig.ids() == ["x"]
+    assert rig.current_id == "x"
+    assert rig.resolver.requests == [("x", NOW, FAST)]
+    assert not rig.notices
+
+
+def test_shuffle_keeps_the_current_track_and_rearms(rig: Rig) -> None:
+    start_playing(rig, "a", "b", "c", "d", "e", "f")
+    rig.controller.set_shuffle(True)
+    assert rig.current_id == "a" and rig.queue.cursor == 0
+    armed = rig.controller._armed
+    assert armed is None or armed[0] == rig.queue.next_uid()
+    rig.controller.set_shuffle(False)
+    assert rig.ids() == ["a", "b", "c", "d", "e", "f"]
+
+
+def test_clear_queue_keeps_the_current_track(rig: Rig) -> None:
+    start_playing(rig, "a", "b")
+    rig.controller.clear_queue()
+    assert rig.ids() == ["a"]
+    assert rig.player.calls[-1] == "playlist_clear"
+    assert rig.controller._armed is None
+
+
+# -- radio ----------------------------------------------------------------------------------
+
+
+def test_radio_tops_up_when_the_queue_runs_low(rig: Rig) -> None:
+    rig.controller.radio = True
+    rig.play("a")
+    assert rig.radio_seeds == ["a"]
+    suggestions = [track(i) for i in ("a", "r1", "r2", "r3", "r4")]
+    rig.controller.add_radio("a", suggestions)
+    assert rig.ids() == ["a", "r1", "r2", "r3", "r4"]  # the seed itself is left out
+    assert all(e.origin == "radio" for e in rig.queue.items[1:])
+    assert rig.radio_seeds == ["a"]  # four left: enough for now
+
+
+def test_radio_off_fetches_nothing(rig: Rig) -> None:
+    rig.play("a")
+    assert rig.radio_seeds == []
+
+
+def test_start_radio_works_with_autoplay_off(rig: Rig) -> None:
+    rig.controller.start_radio(track("a"))
+    assert rig.radio_seeds == ["a"]
+    assert rig.resolver.requests == [("a", NOW, FAST)]
+
+
+def test_radio_answer_for_a_replaced_queue_is_dropped(rig: Rig) -> None:
+    rig.controller.radio = True
+    rig.play("a")
+    rig.play("b")
+    assert rig.radio_seeds == ["a", "b"]
+    rig.controller.add_radio("a", [track("r1")])
+    assert rig.ids() == ["b"]
+
+
+def test_radio_seed_that_brings_nothing_new_is_not_retried(rig: Rig) -> None:
+    rig.controller.radio = True
+    rig.play("a")
+    rig.controller.add_radio("a", [track("a")])
+    rig.controller.set_radio(True)  # would fetch again if the seed weren't spent
+    assert rig.radio_seeds == ["a"]
+
+
+def test_radio_failure_frees_the_slot_for_another_seed(rig: Rig) -> None:
+    rig.controller.radio = True
+    rig.play("a")
+    rig.controller.radio_failed("a")
+    rig.controller.add_to_queue([track("b")])
+    assert rig.radio_seeds == ["a", "b"]
+
+
+def test_radio_resumes_playback_after_the_queue_ran_out(rig: Rig) -> None:
+    rig.controller.radio = True
+    start_playing(rig, "a")
+    rig.player.end(1, "eof")
+    assert rig.state() is PlaybackState.STOPPED
+    rig.controller.add_radio("a", [track("r1"), track("r2"), track("r3")])
+    assert rig.current_id == "r1"
+    assert rig.resolver.requests[-1] == ("r1", NOW, BEST)
+
+
+# -- restoring a saved session ------------------------------------------------------------
+
+
+def test_restore_is_paused_and_play_resumes_where_it_was(rig: Rig) -> None:
+    entries = [(track("a"), "context"), (track("b"), "context")]
+    rig.controller.restore(entries, 1, None, False, RepeatMode.ALL, 42.0)
+    assert rig.state() is PlaybackState.PAUSED and rig.current_id == "b"
+    assert rig.controller.position() == 42.0
+    assert not rig.player.active()
+
+    rig.controller.preload()
+    assert rig.resolver.requests[-1] == ("b", PREFETCH, BEST)
+    rig.controller.toggle_pause()
+    assert rig.resolver.requests[-1] == ("b", NOW, FAST)
+    rig.resolver.complete("b", fast=False)  # the Premium preload wins
+    assert rig.player.loads[-1][0] == "https://x.googlevideo.com/b"
+    assert rig.player.loads[-1][2]["start"] == "42.000"

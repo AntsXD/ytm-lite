@@ -30,6 +30,7 @@ log = logging.getLogger("ytm_worker")
 REQUEST_TIMEOUT = 15
 BACKGROUND_INTERVAL = 0.1  # spec: >= 100 ms between paging/prefetch calls
 LIBRARY_LIMIT = 5000  # "everything" for library lists
+RADIO_LIMIT = 25  # tracks per radio top-up (one request)
 POOL_SIZE = 2
 
 
@@ -253,6 +254,13 @@ def _rate_song(c: Any, args: dict[str, Any]) -> Any:
     return None
 
 
+def _radio(c: Any, args: dict[str, Any]) -> Any:
+    raw = c.get_watch_playlist(
+        videoId=str(args["video_id"]), radio=True, limit=int(args.get("limit") or RADIO_LIMIT)
+    )
+    return [codec.track_to_json(t) for t in parse.tracks(raw.get("tracks"))]
+
+
 _OPERATIONS: dict[str, Callable[[Any, dict[str, Any]], Any]] = {
     "account_info": _account_info,
     "library_playlists": _library_playlists,
@@ -260,4 +268,5 @@ _OPERATIONS: dict[str, Callable[[Any, dict[str, Any]], Any]] = {
     "library_artists": _library_artists,
     "playlist": _playlist,
     "rate_song": _rate_song,
+    "radio": _radio,
 }

@@ -6,7 +6,7 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Any
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QHideEvent, QKeySequence, QShortcut, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ytm_lite.app.models import LIKED_SONGS_ID, Account, AlbumSummary, ArtistSummary, Playlist
+from ytm_lite.app.play_queue import QueueEntry, RepeatMode
 from ytm_lite.app.services import Services
 from ytm_lite.ui.debug_overlay import DebugOverlay
 from ytm_lite.ui.login_dialog import LoginDialog
@@ -27,7 +28,10 @@ from ytm_lite.ui.now_playing_bar import NowPlayingBar
 from ytm_lite.ui.pages.collection_page import CollectionPage
 from ytm_lite.ui.pages.playlist_page import PlaylistPage
 from ytm_lite.ui.pages.signed_out_page import SignedOutPage
+from ytm_lite.ui.queue_panel import QueuePanel
 from ytm_lite.ui.sidebar import Route, Sidebar
+
+_REPEAT_ORDER = (RepeatMode.OFF, RepeatMode.ALL, RepeatMode.ONE)
 
 
 class MainWindow(QMainWindow):
@@ -35,6 +39,7 @@ class MainWindow(QMainWindow):
 
     POLL_MS = 250
     MAX_PAGES = 3  # pages kept alive besides the current one are rebuilt on demand
+    QUEUE_WIDTH = 340
 
     def __init__(self, services: Services) -> None:
         super().__init__()
@@ -42,6 +47,8 @@ class MainWindow(QMainWindow):
         self._last_gap: float | None = None
         self._pages: OrderedDict[Route, QWidget] = OrderedDict()
         self._route: Route | None = None
+        self._queue_panel: QueuePanel | None = None  # created when first shown
+        self._queue_width = self.QUEUE_WIDTH
         self.setWindowTitle("ytm-lite")
         self.resize(1200, 760)
 
@@ -53,17 +60,17 @@ class MainWindow(QMainWindow):
         self.banner.action_clicked.connect(self.show_sign_in)
         self.sidebar = Sidebar()
         self.stack = QStackedWidget()
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.sidebar)
-        splitter.addWidget(self.stack)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([230, 970])
-        splitter.setChildrenCollapsible(False)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(self.sidebar)
+        self.splitter.addWidget(self.stack)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([230, 970])
+        self.splitter.setChildrenCollapsible(False)
         controller = services.controller
-        self.bar = NowPlayingBar()
+        self.bar = NowPlayingBar(services.images)
         self.bar.set_volume(controller.player.volume())
         layout.addWidget(self.banner)
-        layout.addWidget(splitter, 1)
+        layout.addWidget(self.splitter, 1)
         layout.addWidget(self.bar)
         self.setCentralWidget(central)
 
@@ -77,7 +84,12 @@ class MainWindow(QMainWindow):
         self.bar.previous_clicked.connect(controller.previous)
         self.bar.seek_requested.connect(controller.seek)
         self.bar.volume_changed.connect(controller.set_volume)
-        controller.current_changed.connect(self.bar.set_entry)
+        self.bar.shuffle_toggled.connect(controller.set_shuffle)
+        self.bar.repeat_clicked.connect(self._cycle_repeat)
+        self.bar.like_clicked.connect(self._toggle_like)
+        self.bar.queue_toggled.connect(self.set_queue_visible)
+        controller.current_changed.connect(self._on_current_changed)
+        controller.modes_changed.connect(self._on_modes_changed)
         controller.state_changed.connect(self.bar.set_state)
         controller.stream_changed.connect(self.bar.set_stream)
         controller.notice.connect(self.toast.show_message)
@@ -101,6 +113,8 @@ class MainWindow(QMainWindow):
         library.account_changed.connect(self._on_account)
         library.message.connect(self.toast.show_message)
         services.liked.failed.connect(self.toast.show_message)
+        services.liked.changed.connect(self._liked_changed)
+        services.liked.reset.connect(self._update_like)
         services.session.changed.connect(self._on_session_changed)
         services.session.expired.connect(
             lambda: self.banner.show_message(
@@ -117,12 +131,14 @@ class MainWindow(QMainWindow):
             ("Space", controller.toggle_pause),
             ("Ctrl+Right", controller.next),
             ("Ctrl+Left", controller.previous),
+            ("Ctrl+L", self._toggle_like),
             ("Ctrl+Q", QApplication.quit),
             ("Ctrl+Shift+D", self._toggle_overlay),
         ):
             QShortcut(QKeySequence(keys), self).activated.connect(slot)
 
         self._on_session_changed()
+        self._on_modes_changed()
 
     def report_error(self, message: str) -> None:
         """Callable from any thread."""
@@ -153,7 +169,7 @@ class MainWindow(QMainWindow):
         if kind in ("liked", "playlist"):
             playlist_id = LIKED_SONGS_ID if kind == "liked" else route[1]
             title = "Liked Songs" if kind == "liked" else route[2]
-            page = PlaylistPage(playlist_id, title, s.images, s.liked)
+            page = PlaylistPage(playlist_id, title, s.images, s.liked, s.controller)
             page.play_requested.connect(self._play)
             known = s.library.open_playlist(playlist_id, title)
             if known is not None:
@@ -171,7 +187,7 @@ class MainWindow(QMainWindow):
                 )
             )
             return collection
-        signed_out = SignedOutPage(s.images, s.liked)
+        signed_out = SignedOutPage(s.images, s.liked, s.controller)
         signed_out.sign_in_clicked.connect(self.show_sign_in)
         signed_out.play_requested.connect(self._play)
         return signed_out
@@ -197,6 +213,87 @@ class MainWindow(QMainWindow):
         page = self._pages.get(route)
         if isinstance(page, CollectionPage):
             page.set_items(items)
+
+    # -- now playing and the queue ------------------------------------------------------
+
+    def _on_current_changed(self, entry: QueueEntry | None) -> None:
+        self.bar.set_entry(entry)
+        self._update_like()
+
+    def _on_modes_changed(self) -> None:
+        controller, settings = self.s.controller, self.s.settings
+        self.bar.set_modes(controller.queue.shuffled, controller.queue.repeat)
+        if settings.radio_autoplay != controller.radio:
+            settings.radio_autoplay = controller.radio
+            settings.save(self.s.paths.settings_file)
+
+    def _cycle_repeat(self) -> None:
+        current = self.s.controller.queue.repeat
+        self.s.controller.set_repeat(_REPEAT_ORDER[(_REPEAT_ORDER.index(current) + 1) % 3])
+
+    def _toggle_like(self) -> None:
+        entry = self.s.controller.queue.current()
+        if entry is not None:
+            self.s.liked.toggle(entry.track)
+        self._update_like()  # the toggle may have been refused (signed out)
+
+    def _liked_changed(self, video_id: str) -> None:
+        entry = self.s.controller.queue.current()
+        if entry is not None and entry.track.video_id == video_id:
+            self._update_like()
+
+    def _update_like(self) -> None:
+        entry = self.s.controller.queue.current()
+        self.bar.set_liked(entry is not None and self.s.liked.is_liked(entry.track.video_id))
+
+    def set_queue_visible(self, visible: bool) -> None:
+        panel = self._queue_panel
+        if visible and panel is None:
+            panel = self._queue_panel = QueuePanel(self.s.controller, self.s.images)
+            panel.setMinimumWidth(240)
+            panel.hide()
+            self.splitter.addWidget(panel)
+            self.splitter.setStretchFactor(2, 0)
+        if panel is not None and visible != panel.isVisibleTo(self):
+            sizes = self.splitter.sizes()
+            if visible:
+                panel.show()
+                width = min(self._queue_width, max(240, sizes[1] // 2))
+                self.splitter.setSizes([sizes[0], max(200, sizes[1] - width), width])
+            else:
+                self._queue_width = sizes[2]
+                panel.hide()
+        self.bar.set_queue_visible(visible)
+
+    def queue_visible(self) -> bool:
+        return self._queue_panel is not None and self._queue_panel.isVisibleTo(self)
+
+    # -- window layout, saved with the playback session ---------------------------------
+
+    def ui_state(self) -> dict[str, Any]:
+        sizes = self.splitter.sizes()
+        if self.queue_visible() and len(sizes) > 2:
+            self._queue_width = sizes[2]
+        return {
+            "geometry": bytes(self.saveGeometry().toBase64().data()).decode("ascii"),
+            "sidebar": sizes[0],
+            "queue": self.queue_visible(),
+            "queue_width": self._queue_width,
+        }
+
+    def restore_ui_state(self, state: dict[str, Any]) -> None:
+        geometry = state.get("geometry")
+        if isinstance(geometry, str):
+            self.restoreGeometry(QByteArray.fromBase64(geometry.encode("ascii")))
+        sidebar = state.get("sidebar")
+        if isinstance(sidebar, int) and 150 <= sidebar <= 600:
+            total = sum(self.splitter.sizes())
+            self.splitter.setSizes([sidebar, max(200, total - sidebar)])
+        width = state.get("queue_width")
+        if isinstance(width, int) and 240 <= width <= 1000:
+            self._queue_width = width
+        if state.get("queue") is True:
+            self.set_queue_visible(True)
 
     # -- session -----------------------------------------------------------------------
 
@@ -292,6 +389,10 @@ class MainWindow(QMainWindow):
         info: dict[str, Any] = {
             "session": s.session.credentials.method if s.session.credentials else "signed out",
             "playback": s.controller.state.value,
+            "queue": (
+                f"{len(s.controller.queue):,} songs, {s.controller.queue.remaining():,} up next"
+                f"{', autoplay' if s.controller.radio else ''}"
+            ),
             "libmpv": "loaded" if player_stats.get("active") else "not loaded",
             "resolver": "running" if s.resolver.is_running() else "stopped",
             "js runtime": f"{runtime.get('name', '–')} {runtime.get('version', '')}".strip(),

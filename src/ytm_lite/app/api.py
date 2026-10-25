@@ -18,6 +18,7 @@ from ytm_lite.app.models import (
     ArtistSummary,
     Playlist,
     PlaylistSummary,
+    Track,
 )
 from ytm_lite.app.worker_client import WorkerError, WorkerProcess
 from ytm_worker.protocol import ApiErrorKind
@@ -99,3 +100,8 @@ class Api:
     def rate_song(self, video_id: str, liked: bool) -> None:
         self._require_auth()
         self._call("rate_song", {"video_id": video_id, "liked": liked})
+
+    def radio(self, video_id: str) -> list[Track]:
+        """Radio suggestions seeded by a track (works signed out too); the seed itself
+        usually comes back first."""
+        return [codec.track_from_json(t) for t in self._call("radio", {"video_id": video_id})]

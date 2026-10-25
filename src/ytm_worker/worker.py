@@ -36,13 +36,21 @@ API_THREADS = 2
 DEFAULT_IDLE_TIMEOUT = 30.0
 
 
+JobKey = tuple[str, bool]  # (video_id, fast)
+
+
 @dataclass(slots=True)
 class _Job:
     video_id: str
+    fast: bool  # quick standard-quality resolve (signed in) instead of Premium
     priority: int
     format: str | None
     request_ids: list[int] = field(default_factory=list)
     started: bool = False
+
+    @property
+    def key(self) -> JobKey:
+        return (self.video_id, self.fast)
 
 
 def _versions() -> dict[str, str]:
@@ -84,8 +92,8 @@ class Worker:
         self._out = out
         self._out_lock = threading.Lock()
         self._cond = threading.Condition()
-        self._heap: list[tuple[int, int, str]] = []
-        self._jobs: dict[str, _Job] = {}
+        self._heap: list[tuple[int, int, JobKey]] = []
+        self._jobs: dict[JobKey, _Job] = {}
         self._seq = itertools.count()
         self._config: ResolverConfig | None = None
         self._config_gen = 0
@@ -168,17 +176,19 @@ class Worker:
 
     def _enqueue(self, message: dict[str, Any]) -> None:
         video_id = str(message["video_id"])
+        fast = bool(message.get("fast"))
+        key = (video_id, fast)
         request_id = int(message.get("id", 0))
         priority = int(message.get("priority", Priority.NOW))
         with self._cond:
-            job = self._jobs.get(video_id)
+            job = self._jobs.get(key)
             if job is None:
-                job = _Job(video_id, priority, message.get("format"))
-                self._jobs[video_id] = job
-                heapq.heappush(self._heap, (priority, next(self._seq), video_id))
+                job = _Job(video_id, fast, priority, message.get("format"))
+                self._jobs[key] = job
+                heapq.heappush(self._heap, (priority, next(self._seq), key))
             elif not job.started and priority < job.priority:
                 job.priority = priority
-                heapq.heappush(self._heap, (priority, next(self._seq), video_id))
+                heapq.heappush(self._heap, (priority, next(self._seq), key))
             job.request_ids.append(request_id)
             self._cond.notify()
 
@@ -241,8 +251,8 @@ class Worker:
                     return None
                 if self._config is not None:
                     while self._heap:
-                        priority, _, video_id = heapq.heappop(self._heap)
-                        job = self._jobs.get(video_id)
+                        priority, _, key = heapq.heappop(self._heap)
+                        job = self._jobs.get(key)
                         if job is not None and not job.started and job.priority == priority:
                             job.started = True
                             return job, self._config, self._config_gen
@@ -259,13 +269,20 @@ class Worker:
         while (picked := self._next_job()) is not None:
             job, config, generation = picked
             reply: dict[str, Any]
+            resolver = self._resolver(config, generation)
             try:
-                stream = self._resolver(config, generation).resolve(job.video_id, job.format)
-                reply = {"op": "result", "video_id": job.video_id, "stream": stream}
+                stream = resolver.resolve(job.video_id, job.format, fast=job.fast)
+                reply = {
+                    "op": "result",
+                    "video_id": job.video_id,
+                    "fast": job.fast,
+                    "stream": stream,
+                }
             except ResolveError as exc:
                 reply = {
                     "op": "error",
                     "video_id": job.video_id,
+                    "fast": job.fast,
                     "kind": exc.kind.value,
                     "message": str(exc),
                 }
@@ -274,11 +291,12 @@ class Worker:
                 reply = {
                     "op": "error",
                     "video_id": job.video_id,
+                    "fast": job.fast,
                     "kind": ErrorKind.INTERNAL.value,
                     "message": f"{type(exc).__name__}: {exc}",
                 }
             with self._cond:
-                self._jobs.pop(job.video_id, None)
+                self._jobs.pop(job.key, None)
                 request_ids = list(job.request_ids)
             self._touch()
             for request_id in request_ids:

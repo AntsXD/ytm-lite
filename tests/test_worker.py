@@ -38,14 +38,16 @@ class Sink:
 
 
 class FakeResolver:
-    calls: ClassVar[list[str]] = []
+    calls: ClassVar[list[str]] = []  # video ids; fast resolves as "<id>:fast"
     gate: ClassVar[threading.Event] = threading.Event()
 
     def __init__(self, config: ResolverConfig, runtime: Any = None) -> None:
         self.config = config
 
-    def resolve(self, video_id: str, format_override: str | None = None) -> StreamDict:
-        FakeResolver.calls.append(video_id)
+    def resolve(
+        self, video_id: str, format_override: str | None = None, fast: bool = False
+    ) -> StreamDict:
+        FakeResolver.calls.append(f"{video_id}:fast" if fast else video_id)
         if video_id == "slow":
             FakeResolver.gate.wait(5)
         return StreamDict(
@@ -72,8 +74,16 @@ def sink(monkeypatch: pytest.MonkeyPatch) -> Iterator[Sink]:
     FakeResolver.gate.set()
 
 
-def _resolve(video_id: str, request_id: int, priority: Priority = Priority.NOW) -> dict[str, Any]:
-    return {"op": "resolve", "id": request_id, "video_id": video_id, "priority": int(priority)}
+def _resolve(
+    video_id: str, request_id: int, priority: Priority = Priority.NOW, fast: bool = False
+) -> dict[str, Any]:
+    return {
+        "op": "resolve",
+        "id": request_id,
+        "video_id": video_id,
+        "priority": int(priority),
+        "fast": fast,
+    }
 
 
 class FakeService(YtmService):
@@ -165,6 +175,20 @@ def test_duplicate_requests_are_merged(sink: Sink) -> None:
     w.stop()
     assert FakeResolver.calls.count("dup") == 1
     assert sorted(m["id"] for m in messages if m.get("video_id") == "dup") == [2, 3]
+
+
+def test_fast_and_premium_requests_are_separate_jobs(sink: Sink) -> None:
+    w = make_worker(sink)
+    w.handle(_resolve("slow", 1))  # occupies the only thread
+    w.handle(_resolve("vid", 2, Priority.PREFETCH))
+    w.handle(_resolve("vid", 3, Priority.NOW, fast=True))
+    w.handle({"op": "configure", "cachedir": "c"})
+    FakeResolver.gate.set()
+    messages = sink.wait_for(4)
+    w.stop()
+    assert FakeResolver.calls == ["slow", "vid:fast", "vid"]  # not merged; NOW first
+    replies = {m["id"]: m["fast"] for m in messages if m.get("video_id") == "vid"}
+    assert replies == {2: False, 3: True}
 
 
 def test_now_overtakes_queued_prefetch(sink: Sink) -> None:

@@ -59,6 +59,12 @@ class FakeClient:
         tracks = [{"videoId": f"v{i}", "title": f"T{i}"} for i in range(3)]
         return {"title": "Mix", "trackCount": 3, "tracks": tracks}
 
+    def get_watch_playlist(self, videoId: str, radio: bool, limit: int) -> dict[str, Any]:
+        assert radio
+        tracks = [{"videoId": videoId, "title": "Seed", "length": "3:07"}]
+        tracks += [{"videoId": f"r{i}", "title": f"R{i}", "length": "2:00"} for i in range(2)]
+        return {"tracks": tracks, "playlistId": f"RDAMVM{videoId}"}
+
 
 @pytest.fixture
 def service(monkeypatch: pytest.MonkeyPatch) -> tuple[YtmService, list[Any]]:
@@ -80,6 +86,9 @@ def test_calls_return_compact_json(service: tuple[YtmService, list[Any]]) -> Non
     playlist = svc.call("playlist", {"playlist_id": "PL1", "limit": None})
     assert playlist["id"] == "PL1" and playlist["x"] == 1
     assert [t["v"] for t in playlist["tr"]] == ["v0", "v1", "v2"]
+    radio = svc.call("radio", {"video_id": "seed"})
+    assert [t["v"] for t in radio] == ["seed", "r0", "r1"]
+    assert radio[0]["d"] == 187
 
 
 def test_pool_reuse_new_credentials_and_one_off_headers(

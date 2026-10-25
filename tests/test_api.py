@@ -75,6 +75,13 @@ def test_results_become_models() -> None:
     assert worker.calls[-1][3] == CREDS.ytmusic_headers()
 
 
+def test_radio_works_signed_out() -> None:
+    api, worker = make()
+    worker.answers["radio"] = [codec.track_to_json(Track("r1", "R1", duration=120))]
+    assert api.radio("seed") == [Track("r1", "R1", duration=120)]
+    assert worker.calls[-1] == ("radio", {"video_id": "seed"}, False, None)
+
+
 def test_worker_errors_become_api_errors(tmp_path: Path) -> None:
     api, worker = make()
     api.set_credentials(CREDS)

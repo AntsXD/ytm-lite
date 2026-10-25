@@ -31,9 +31,10 @@ class StreamInfo:
     http_headers: Mapping[str, str] = field(default_factory=dict)
     duration: float | None = None
     premium: bool = False
+    fast: bool = False  # resolved by the quick standard-quality path
 
     @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> StreamInfo:
+    def from_dict(cls, d: Mapping[str, Any], fast: bool = False) -> StreamInfo:
         return cls(
             video_id=str(d["video_id"]),
             url=str(d["url"]),
@@ -45,6 +46,7 @@ class StreamInfo:
             http_headers={str(k): str(v) for k, v in (d.get("http_headers") or {}).items()},
             duration=float(d["duration"]) if d.get("duration") else None,
             premium=bool(d.get("premium")),
+            fast=fast,
         )
 
     def valid_for(self, seconds: float, now: float | None = None) -> bool:
@@ -64,7 +66,19 @@ class StreamInfo:
         return f"{text} · Premium" if self.premium else text
 
 
+PendingKey = tuple[str, bool]  # (video_id, fast)
+
+
 class ResolverClient(QObject):
+    """Signed in, a stream is resolved one of two ways:
+
+    - "fast" (a track you click): the signed-out path, ~1.5 s, standard quality;
+    - best (everything prefetched): the Premium path, ~4 s, but nobody waits for it.
+
+    The cache remembers which kind it holds, so a fast URL never stands in for a
+    Premium prefetch. Signed out, both are the same.
+    """
+
     resolved = Signal(str, object)  # video_id, StreamInfo
     failed = Signal(str, str, str)  # video_id, ErrorKind value, message
 
@@ -74,11 +88,15 @@ class ResolverClient(QObject):
         super().__init__(parent)
         self._worker = worker
         self._cache: OrderedDict[str, StreamInfo] = OrderedDict()
-        self._pending: dict[str, int] = {}
-        self._formats: dict[str, str | None] = {}
+        self._pending: dict[PendingKey, int] = {}
+        self._formats: dict[PendingKey, str | None] = {}
         self._next_id = 1
         worker.message.connect(self._handle)
         worker.exited.connect(self._on_worker_exit)
+
+    @property
+    def signed_in(self) -> bool:
+        return bool(self._worker.config.get("cookies"))
 
     # -- public API -----------------------------------------------------------------
 
@@ -102,12 +120,17 @@ class ResolverClient(QObject):
     def is_running(self) -> bool:
         return self._worker.is_running()
 
-    def cached(self, video_id: str, valid_for: float = 0.0) -> StreamInfo | None:
+    def cached(
+        self, video_id: str, valid_for: float = 0.0, best: bool = False
+    ) -> StreamInfo | None:
+        """A cached stream; with `best`, only one resolved the Premium way (when signed in)."""
         stream = self._cache.get(video_id)
         if stream is None:
             return None
         if not stream.valid_for(valid_for):
             del self._cache[video_id]
+            return None
+        if best and stream.fast:
             return None
         self._cache.move_to_end(video_id)
         return stream
@@ -116,35 +139,39 @@ class ResolverClient(QObject):
         self._cache.pop(video_id, None)
 
     def is_pending(self, video_id: str) -> bool:
-        return video_id in self._pending
+        return any(key[0] == video_id for key in self._pending)
 
     def request(
         self,
         video_id: str,
         priority: Priority = Priority.NOW,
         *,
+        fast: bool = False,
         format_override: str | None = None,
     ) -> None:
         """Resolve `video_id`; the answer arrives via `resolved` or `failed`."""
-        stream = self.cached(video_id)
+        fast = fast and self.signed_in  # signed out, both ways are the same
+        stream = self.cached(video_id, best=not fast)
         if stream is not None and format_override is None:
             QTimer.singleShot(0, lambda: self.resolved.emit(video_id, stream))
             return
-        previous = self._pending.get(video_id)
+        key = (video_id, fast)
+        previous = self._pending.get(key)
         if previous is not None and previous <= priority:
             return
-        self._pending[video_id] = int(priority)
-        self._formats[video_id] = format_override
-        self._send(video_id)
+        self._pending[key] = int(priority)
+        self._formats[key] = format_override
+        self._send(key)
 
-    def _send(self, video_id: str) -> None:
+    def _send(self, key: PendingKey) -> None:
         self._worker.send(
             {
                 "op": "resolve",
                 "id": self._next_id,
-                "video_id": video_id,
-                "priority": self._pending[video_id],
-                "format": self._formats.get(video_id),
+                "video_id": key[0],
+                "fast": key[1],
+                "priority": self._pending[key],
+                "format": self._formats.get(key),
             }
         )
         self._next_id += 1
@@ -153,32 +180,37 @@ class ResolverClient(QObject):
 
     def _handle(self, message: dict[str, Any]) -> None:
         op = message["op"]
+        key = (str(message.get("video_id")), bool(message.get("fast")))
         if op == "result":
-            stream = StreamInfo.from_dict(message["stream"])
-            video_id = stream.video_id
-            self._pending.pop(video_id, None)
-            if self._formats.pop(video_id, None) is None:
-                self._cache[video_id] = stream
-                self._cache.move_to_end(video_id)
-                while len(self._cache) > self.CACHE_SIZE:
-                    self._cache.popitem(last=False)
-            self.resolved.emit(video_id, stream)
+            stream = StreamInfo.from_dict(message["stream"], fast=key[1])
+            self._pending.pop(key, None)
+            if self._formats.pop(key, None) is None:
+                self._store(stream)
+            self.resolved.emit(stream.video_id, stream)
         elif op == "error":
-            video_id = str(message["video_id"])
-            self._pending.pop(video_id, None)
-            self._formats.pop(video_id, None)
+            self._pending.pop(key, None)
+            self._formats.pop(key, None)
             log.warning(
-                "resolve failed for %s (%s): %s", video_id, message["kind"], message["message"]
+                "resolve failed for %s (%s): %s", key[0], message["kind"], message["message"]
             )
-            self.failed.emit(video_id, str(message["kind"]), str(message["message"]))
+            self.failed.emit(key[0], str(message["kind"]), str(message["message"]))
+
+    def _store(self, stream: StreamInfo) -> None:
+        existing = self._cache.get(stream.video_id)
+        if existing is not None and stream.fast and not existing.fast and existing.valid_for(0):
+            return  # keep the Premium URL
+        self._cache[stream.video_id] = stream
+        self._cache.move_to_end(stream.video_id)
+        while len(self._cache) > self.CACHE_SIZE:
+            self._cache.popitem(last=False)
 
     def _on_worker_exit(self, restartable: bool) -> None:
         if not self._pending:
             return
         if restartable:
-            for video_id in list(self._pending):
-                self._send(video_id)
+            for key in list(self._pending):
+                self._send(key)
             return
         pending, self._pending = self._pending, {}
-        for video_id in pending:
+        for video_id, _fast in pending:
             self.failed.emit(video_id, ErrorKind.INTERNAL.value, "The worker keeps crashing")
