@@ -6,6 +6,7 @@ and the queue is capped, so fast scrolling doesn't build a backlog of off-screen
 
 from __future__ import annotations
 
+import sys
 from collections import OrderedDict
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from PySide6.QtNetwork import (
     QNetworkDiskCache,
     QNetworkReply,
     QNetworkRequest,
+    QSslSocket,
 )
 
 from ytm_lite.app.thumbnails import image_key, sized_url
@@ -34,6 +36,11 @@ class ImageLoader(QObject):
 
     def __init__(self, cache_dir: Path, parent: QObject | None = None) -> None:
         super().__init__(parent)
+        if sys.platform == "win32":
+            # Windows' own TLS. Qt prefers its OpenSSL backend whenever some OpenSSL is on
+            # PATH (Git's, for one): ~6 MB more, and behaviour that depends on what else
+            # is installed.
+            QSslSocket.setActiveBackend("schannel")
         self._nam = QNetworkAccessManager(self)
         disk = QNetworkDiskCache(self)
         disk.setCacheDirectory(str(cache_dir / "images"))

@@ -38,6 +38,7 @@ MEASURE_DIR = ROOT / ".measure"
 VENV_SCRIPTS = (ROOT / ".venv" / "Scripts").resolve()
 LAST_BREAKDOWN: list[str] = []  # per-process lines from the last sample of a scenario
 REAL_PROFILE = False  # --real-profile: measure your signed-in profile instead of a throwaway one
+EXE: Path | None = None  # --exe: measure a packaged build instead of the source
 LOG_OFFSET: dict[str, int] = {}
 # Rolling Stone's 500 Greatest Songs (public): stands in for "a 200-track playlist visible".
 BIG_PLAYLIST = "PLciALUPf8sIJlvH350O8PWh4UbSbOffSJ"
@@ -112,8 +113,15 @@ def sample(root: psutil.Process) -> Sample:
     return Sample(rss, private, threads, count, cpu, breakdown)
 
 
+def clean_path() -> str:
+    """PATH without folders that hold an OpenSSL Qt could pick up (Git's mingw64\bin): a
+    typical user's machine has none, and Qt's OpenSSL backend would load it (~6 MB)."""
+    folders = os.environ.get("PATH", "").split(os.pathsep)
+    return os.pathsep.join(f for f in folders if not (Path(f) / "libcrypto-3-x64.dll").exists())
+
+
 def launch(scenario: str, *extra: str) -> tuple[subprocess.Popen[bytes], Path, float]:
-    env = dict(os.environ)
+    env = dict(os.environ, PATH=clean_path())
     if REAL_PROFILE:
         # Your own profile: signed in, real library. Only lines logged from now on count.
         log = real_log()
@@ -130,12 +138,16 @@ def launch(scenario: str, *extra: str) -> tuple[subprocess.Popen[bytes], Path, f
     ready_file.unlink(missing_ok=True)
     started = time.time()
     proc = subprocess.Popen(
-        [sys.executable, "-m", "ytm_lite", "--measure-ready", str(ready_file), *extra],
+        [*app_command(), "--measure-ready", str(ready_file), *extra],
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     return proc, ready_file, started
+
+
+def app_command() -> list[str]:
+    return [str(EXE)] if EXE is not None else [sys.executable, "-m", "ytm_lite"]
 
 
 def wait_ready(ready_file: Path, timeout: float = 30) -> float:
@@ -353,6 +365,7 @@ def main() -> int:
         default=["startup", "tray", "tray-after", "idle", "playing", "window", "queue"],
     )
     parser.add_argument("--seconds", type=float, default=60)
+    parser.add_argument("--exe", help="a packaged ytm-lite.exe to measure instead of the source")
     parser.add_argument(
         "--playlist",
         default=BIG_PLAYLIST,
@@ -365,8 +378,9 @@ def main() -> int:
         help="use your own (signed-in) profile instead of a throwaway signed-out one",
     )
     args = parser.parse_args()
-    global REAL_PROFILE
+    global REAL_PROFILE, EXE
     REAL_PROFILE = args.real_profile
+    EXE = Path(args.exe).resolve() if args.exe else None
     MEASURE_DIR.mkdir(exist_ok=True)
 
     results = []

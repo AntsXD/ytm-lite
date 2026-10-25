@@ -21,7 +21,6 @@ import sys
 import time
 import types
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt
@@ -35,10 +34,12 @@ log = logging.getLogger(__name__)
 
 
 def _installed() -> bool:
-    """Whether the projection is there, without importing it (that loads WinRT)."""
-    spec = importlib.util.find_spec("winrt")
-    locations = spec.submodule_search_locations if spec is not None else None
-    return any((Path(p) / "windows" / "media" / "interop").is_dir() for p in locations or ())
+    """Whether the projection is there, without loading it (that starts WinRT). `winrt`
+    is a namespace package, so finding a module in it runs no code."""
+    try:
+        return importlib.util.find_spec("winrt._winrt_windows_media_interop") is not None
+    except (ImportError, ValueError):
+        return False
 
 
 class _AsyncioOnDemand(types.ModuleType):

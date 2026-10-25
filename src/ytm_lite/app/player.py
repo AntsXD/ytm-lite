@@ -39,11 +39,12 @@ MPV_OPTIONS: dict[str, str] = {
     "terminal": "no",
     "idle": "yes",
     "cache": "yes",
-    # 4 MiB is about 4 minutes of 134k Opus (2 minutes at 256k). The spec's 16/4 MiB cost
-    # ~40 MB more, and with a cache smaller than the track mpv only opens the armed next
-    # file once the current one is fully read, so normally just one stream is buffered.
-    "demuxer-max-bytes": "4MiB",
-    "demuxer-max-back-bytes": "1MiB",
+    # 2 MiB is about 2 minutes of 134k Opus (1 minute at 256k), plenty for a network
+    # hiccup. mpv opens the armed next file once the current one is fully read, so a
+    # minute or more before it ends (still gapless), and normally just one stream is
+    # buffered. The spec's 16/4 MiB cost ~40 MB more; 4/1 MiB, 2.5-5 MB more.
+    "demuxer-max-bytes": "2MiB",
+    "demuxer-max-back-bytes": "512KiB",
     "prefetch-playlist": "yes",
     "gapless-audio": "yes",
     "audio-samplerate": "48000",

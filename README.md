@@ -5,8 +5,9 @@ Qt Widgets UI, libmpv for audio, no embedded browser of any kind.
 
 Unofficial: not affiliated with or endorsed by Google or YouTube. Use it with your own account.
 
-**Status:** milestone 4 of 5 (search, album and artist pages, the tray, media keys). Next: lyrics,
-the home feed, a mini player, a settings dialog and the packaged build (milestone 5).
+**Status:** all five milestones done: playback, library, queue, search, tray and media keys,
+then lyrics, the home feed, a mini player, settings, hotkeys, normalization, a yt-dlp updater
+and a packaged Windows build.
 
 ## How it works
 
@@ -44,6 +45,10 @@ ytm-lite (player process)                      worker (started on demand)
   ~5 MB of private memory (twice that if it were allowed to pull in `asyncio` and OpenSSL, which
   it only needs for `await`), so an app idling in the tray never loads it. Covers are handed to
   Windows as bytes from the app's own cover cache, not as URLs for WinRT to download.
+- **yt-dlp can be updated without a new release of the app.** YouTube breaks stream extraction
+  every few weeks. "Check for yt-dlp update" (Settings → Advanced, or the banner that appears
+  when songs keep failing) has the worker fetch the newest yt-dlp from PyPI, check it, and
+  restart with it; the song playing keeps playing.
 
 ## Setup (Windows)
 
@@ -63,8 +68,10 @@ sha256 and puts `libmpv-2.dll` in `vendor/`. On Linux, install libmpv from your 
 uv run python -m ytm_lite
 ```
 
-- The window is three rounded panels on black (your library, the page you're on, the queue)
-  with the player along the bottom; the accent color is violet.
+- The window is three rounded panels on black (your library, the page you're on, the queue or
+  the lyrics) with the player along the bottom; the accent color is violet.
+- It opens on **Home**: YouTube Music's home feed (quick picks, mixes, new releases) as a list
+  of shelves, signed in or not. "Show all" opens a shelf up; a song plays with its radio.
 - **Search** with the box at the top (Ctrl+F). Suggestions appear as you type; Enter or a
   suggestion runs the search. "All" shows the top result and the best songs, albums, artists
   and playlists; the Songs, Albums, Artists and Playlists tabs load when you open them. A song
@@ -78,10 +85,24 @@ uv run python -m ytm_lite
 - The list button at the right of the bar opens the queue: drag songs to reorder them, Delete
   removes the selection, double-click jumps to a song. With **Autoplay** on, radio suggestions
   for the last song are added when two songs are left.
+- The microphone button next to it shows the song's **lyrics** in the same place. Synced lyrics
+  light up the line being sung and keep it in the middle; click a line to jump there.
+- The **mini player** (the button after the queue's, Ctrl+M, or the tray menu) is a small window
+  that stays on top: cover, song, previous/play/next and a progress line. Drag it anywhere;
+  double-click it to get the full window back. The full window is closed meanwhile, so it costs
+  next to nothing.
 - **Closing the window keeps the music playing in the tray.** Click the tray icon to bring the
-  window back (middle-click: play/pause); its menu has Play/Pause, Next, Previous and Quit. To
-  make closing quit instead, set `"close_to_tray": false` in `settings.json` (a settings dialog
-  comes in milestone 5). `--start-minimized` starts in the tray, without a window.
+  window back (middle-click: play/pause); its menu has Play/Pause, Next, Previous, Mini player,
+  Settings and Quit. `--start-minimized` starts in the tray, without a window.
+- **Settings** (the gear at the top right, Ctrl+, or the tray menu):
+  - General: closing to the tray, Autoplay, adding plays to your YouTube Music history.
+  - Playback: volume normalization and the output device. "Like YouTube Music" (the default)
+    turns loud songs down by the loudness YouTube measured for them, as YouTube's own player
+    does; "Even out loud and quiet parts" uses mpv's dynamic normalizer instead.
+  - Hotkeys: global shortcuts for play/pause, next, previous, like, showing the window, the mini
+    player and volume. They work while a game has focus (RegisterHotKey, not a keyboard hook).
+  - Advanced: the JavaScript runtime, yt-dlp's player clients, and the yt-dlp version with
+    Check for update.
 - **Media keys and the Windows media overlay** (the volume flyout) work: the overlay shows the
   song, its cover and the position, with play/pause, next, previous and seeking. On Linux the
   app is an MPRIS player, so desktop media widgets and `playerctl` control it.
@@ -90,16 +111,16 @@ uv run python -m ytm_lite
   from a hotkey tool: `uv run python -m ytm_lite --next`.
 - **Plays count.** Signed in, a song you've played for 10 s (pauses don't count) is added to your
   YouTube Music history, as YouTube Music's own player does, so it shows up in your history,
-  your recommendations and your yearly Recap. Set `"report_history": false` in `settings.json`
-  to keep plays out of your history.
+  your recommendations and your yearly Recap. Settings → General turns this off.
 - Shortcuts: Space play/pause, Ctrl+→ / Ctrl+← next/previous, Ctrl+L like, Ctrl+F search,
-  Alt+← / Alt+→ back/forward, Ctrl+Q quit.
+  Alt+← / Alt+→ back/forward, Ctrl+M mini player, Ctrl+, settings, Ctrl+Q quit.
 - The queue, your place in it (paused), shuffle and repeat, volume and the window layout come back
   at the next start. They are saved in `queue.json` and `state.json` next to `settings.json`.
 
 Ctrl+Shift+D toggles the debug overlay (memory per process, threads, worker and libmpv state,
-queue, cover cache, last track-transition gap). Options: `--debug` (verbose log),
-`--start-minimized` (start in the tray).
+the stream's format, the normalization gain, the output device, queue, cover caches, last
+track-transition gap). Options: `--debug` (verbose log), `--start-minimized` (start in the
+tray).
 
 Logs go to `%LOCALAPPDATA%\ytm-lite\Logs\ytm-lite.log` (1 MB × 3, secrets redacted).
 `YTM_LITE_HOME=<folder>` puts config, cache and logs in one folder instead.
@@ -136,6 +157,9 @@ library and likes need a sign-in.
   cookies.
 - Premium streams need YouTube's JavaScript challenge solved. yt-dlp runs it in Deno with no
   file, network or environment permissions.
+- yt-dlp updates come from PyPI over HTTPS. Both files must match PyPI's SHA-256, may only
+  unpack inside their own folder, and the new yt-dlp must import before the worker switches to
+  it; the copy that came with the app stays as the fallback.
 - Your cookies are as good as being signed in to YouTube. DPAPI keeps them from other Windows
   users and from anyone who takes the disk, not from malware running as you (Firefox keeps the
   same cookies unencrypted in its profile).
@@ -163,11 +187,38 @@ Diagnostics:
 - `YTM_WORKER_EXTRACTOR_ARGS='{"player_skip": ["configs"]}'` adds yt-dlp YouTube extractor
   arguments, for experiments.
 
+## Build (Windows package)
+
+```bash
+uv sync --group build
+uv run python tools/fetch_libmpv.py
+uv run python tools/build.py
+```
+
+`tools/build.py` writes `dist/ytm-lite/` (about 360 MB; zip the folder to share it):
+
+- `ytm-lite.exe` with Qt and Python: the app, compiled by Nuitka (about 70 MB). yt-dlp,
+  ytmusicapi and `requests` are not in it; only the worker uses them.
+- `lib/libmpv-2.dll` (121 MB).
+- `worker/`: python.org's embeddable Python 3.14 (pinned, SHA-256 checked) that runs the worker,
+  with yt-dlp, yt-dlp-ejs, ytmusicapi and their dependencies (the files installed in `.venv`,
+  precompiled) and `deno.exe` (98 MB) for Premium streams.
+
+A build takes about two minutes with Visual Studio 2026's C++ compiler. The packaged app keeps
+its settings, library cache and logs where the source run does, so the two share your sign-in
+(run only one at a time: the second just brings up the first one's window). The first time it
+runs, it adds **ytm-lite** to the Start menu, pointing at wherever the folder is. The entry
+carries the app's AppUserModelID (`AntsXD.ytm-lite`), which is how Windows knows the name and
+icon to show in the media overlay. To remove it, delete
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs\ytm-lite.lnk`. The build isn't code-signed,
+so the first start after a build takes a few extra seconds while Windows checks the new files.
+
 ## Measure
 
 ```bash
 uv run python tools/measure.py         # startup, tray, tray-after, idle, playing, window, queue
 uv run python tools/measure.py tray tray-after playing window queue --real-profile --playlist LM
+uv run python tools/measure.py --exe dist/ytm-lite/ytm-lite.exe     # the packaged build
 uv run python tools/spikes/s2_libmpv.py --variant small
 uv run python tools/spikes/s3_qt_tray.py
 uv run python tools/spikes/s5_smtc.py interop
@@ -183,12 +234,59 @@ window for 30 s, then closes the window to the tray; both sample for 60 s once t
 exited. `playing` plays the test tracks from the tray (until milestone 3: a minimized window).
 The `window` scenario opens a large playlist (a public 462-track one, or `LM` = your Liked Songs)
 while the test tracks play; `queue` plays that playlist itself with the queue panel open.
-Measurement runs never save the session, so `--real-profile` leaves your queue alone.
+Measurement runs never save the session, so `--real-profile` leaves your queue alone. The app
+is started with a PATH that has no folder holding an OpenSSL (Git for Windows adds one), as on
+a typical machine: Qt's OpenSSL TLS backend would load it just to check itself. Until
+milestone 5 it did, so earlier source measurements of scenarios that downloaded covers include
+~5 MB of Git's OpenSSL. `--exe dist/ytm-lite/ytm-lite.exe` measures the packaged build.
 
 ## Measured numbers
 
 Windows 11, Python 3.14.7, PySide6 6.12.0, mpv 0.41 (shinchiro 2026-10-21), yt-dlp 2026.10.21,
-ytmusicapi 1.12.3, pywinrt 4.0.3, running from source.
+ytmusicapi 1.12.3, pywinrt 4.0.3, running from source; from milestone 5 also the packaged
+build (Nuitka 4.3.1, MSVC 14.5).
+
+### Milestone 5 (2026-10-25)
+
+| Spec target | Packaged, signed in (677-song library) | Packaged, signed out | Source, signed out | |
+|---|---|---|---|---|
+| Idle in the tray < 80 MB | 14.0 MB RSS / 40.9 MB private | 4.0 MB / 38.1 MB | 3.4 MB / 39.8 MB | ✅ |
+| CPU idle in the tray | 0.05% of one core | 0.00% | 0.00% | ✅ |
+| Playing, window open, 200+ track list < 150 MB | 150.2 MB / 86.2 MB steady (Liked Songs on screen); 236 MB peak while the worker is up | 144.6 MB / 83.8 MB steady (public 462-track playlist); 221 MB peak | 136.8 MB / 89.0 MB steady; 214 MB peak | ⚠️ at the line signed in |
+| Same, that list playing as a queue with the queue panel open | 150.9 MB / 86.7 MB steady; 226 MB peak | 148.5 MB / 86.0 MB steady; 224 MB peak | 141.4 MB / 91.6 MB steady; 219 MB peak | ⚠️ at the line signed in |
+| Playing, in the tray | 69.8 MB / 69.3 MB steady; 154 MB peak | 58.4 MB / 66.7 MB steady; 120 MB peak | 69.5 MB / 71.4 MB steady; 132 MB peak | ✅ |
+| CPU playing in the tray < 1% | 1.8% of one core *including two resolves*; 0.09% of 20 logical CPUs | 1.9% of one core; 0.10% | 1.7% of one core; 0.09% | ✅ |
+| Cold start < 2 s | 0.62 s median | 0.62 s median (6.4 s the first time after a build) | 0.87 s median | ✅ |
+| Gapless track change | | | 9 ms, after a minute of normal playback into the next song | ✅ |
+
+The packaged build has the larger working set and the smaller private memory: `ytm-lite.exe`
+is a 17 MB image of compiled code, which the source run keeps as bytecode in its heap instead.
+With the window open that's 7–8 MB more RSS and 5–6 MB less private. Signed in, with Liked Songs
+(677 songs) on screen or as the queue, it puts the packaged build right at the 150 MB line:
+150.2 and 150.9 MB (an otherwise identical build compiled without docstrings read 150.5 and
+148.9 MB; runs differ by 1–2 MB), with 86 MB private. Task Manager's "Memory" column (the
+private working set) read 71.7 MB for the build in the signed-out window scenario, measured
+before the OpenSSL fix and the smaller read-ahead below. The next lever would be the media
+overlay: pywinrt costs ~5 MB private and about as much working set once something plays, and
+calling the same Windows APIs through ctypes, as the Start Menu shortcut does, would remove it.
+
+Milestone 5's features cost little where it counts: the source run's window scenarios are
+lower than milestone 4's (136.8 MB against 140.2 MB with the big playlist on screen) thanks to
+the smaller read-ahead and the OpenSSL fix below. Idle with the window open is higher (98.4 MB
+against 92.6 MB) because the window now opens on Home, covers and all, instead of an almost
+empty page.
+
+Findings that shaped milestone 5:
+
+| Finding | Decision |
+|---|---|
+| Qt's OpenSSL TLS backend loads any OpenSSL it finds on PATH just to check itself (Git for Windows puts one there): ~5 MB in the player. Earlier source measurements of scenarios that downloaded covers include it | Covers use Windows' TLS (schannel); the build leaves the OpenSSL backend out; `measure.py` starts the app with a PATH without OpenSSL folders |
+| mpv's 4 MiB read-ahead held two minutes of Premium audio | 2 MiB ahead (a minute of Premium, two of standard quality) and 512 KiB behind: 2.5–7 MB less while playing; track changes stay gapless (9 ms) |
+| YouTube's player response carries each song's loudness against YouTube's reference level ("content loudness" in Stats for nerds), in the audio formats that ytmusicapi's `get_song` keeps: Metallica +3.5 dB, Skrillex +2.3, Taylor Swift −1.2, Debussy −10.6 | "Like YouTube Music" normalization does what YouTube's player does: a song above the reference is turned down by that much, a quieter one is left alone. It's set per file (mpv's `volume-gain`), so it changes exactly at the track boundary |
+| In the packaged build pywinrt's interop module sits at the package root, so looking for a `winrt/windows/media/interop` folder found nothing and the overlay fell back to hotkeys | pywinrt is detected by finding the module's spec in the `winrt` namespace package, which runs no code in either layout |
+| Windows names a desktop app (media overlay, notifications) after the Start Menu shortcut that carries its AppUserModelID; the overlay session was "python.exe" | The packaged app sets the ID and writes its Start Menu shortcut with the shell's COM objects (ctypes, no new package); the shell's Apps folder now resolves `AntsXD.ytm-lite` to "ytm-lite" |
+| RegisterHotKey fails for a combination another app already holds, and a bare letter would be taken from every app | Refusals show next to the hotkey in Settings; hotkeys need Ctrl, Alt or Win, except F-keys and media keys |
+| Qt's Fusion style instead of the Windows 11 one, and compiling without docstrings, each changed the window scenarios by about 1 MB, inside the noise | Neither was kept |
 
 ### Milestone 4 (2026-10-25)
 
