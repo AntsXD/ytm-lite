@@ -27,7 +27,6 @@ from PySide6.QtGui import (
     QColor,
     QCursor,
     QFont,
-    QGuiApplication,
     QKeyEvent,
     QMouseEvent,
     QPainter,
@@ -36,7 +35,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
-    QMenu,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -51,6 +49,7 @@ from ytm_lite.app.play_queue import QueueEntry
 from ytm_lite.app.playback import PlaybackController
 from ytm_lite.ui import icons
 from ytm_lite.ui.theme import ACCENT, HOVER, SELECTED, TEXT, TEXT_DIM, TEXT_FAINT, font
+from ytm_lite.ui.track_menu import Navigate, show_track_menu
 from ytm_lite.ui.widgets import draw_cover
 
 ROW_HEIGHT = 56
@@ -327,14 +326,17 @@ class TrackTable(QTableView):
         images: ImageLoader,
         liked: LikedIndex,
         controller: PlaybackController,
+        navigate: Navigate | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._liked = liked
         self._controller = controller
+        self._navigate = navigate
         self.setModel(model)
         self.track_model = model
         self.hovered_row = -1
+        self.album_column = True  # off on album pages, where it would repeat the album
         self.setItemDelegate(RowDelegate(self, images, liked))
 
         vertical = self.verticalHeader()
@@ -418,7 +420,7 @@ class TrackTable(QTableView):
         width = self.viewport().width()
         fixed = sum(self.columnWidth(c) for c in (Column.INDEX, Column.DURATION, Column.LIKED))
         narrow = width < 560
-        self.setColumnHidden(Column.ALBUM, narrow)
+        self.setColumnHidden(Column.ALBUM, narrow or not self.album_column)
         if not narrow:
             self.setColumnWidth(Column.ALBUM, max(140, min(320, (width - fixed) // 3)))
 
@@ -453,26 +455,13 @@ class TrackTable(QTableView):
         track = self.track_model.track(index.row())
         if track is None:
             return
-        tracks = self._selected_tracks(index.row())
-        controller = self._controller
-        menu = QMenu(self)
-        play = menu.addAction("Play")
-        play.setEnabled(track.available)
-        play.triggered.connect(lambda: self.play_row(index.row()))
-        many = f" ({len(tracks)} songs)" if len(tracks) > 1 else ""
-        play_next = menu.addAction(f"Play next{many}")
-        play_next.setEnabled(bool(tracks))
-        play_next.triggered.connect(lambda: controller.play_next(tracks))
-        add = menu.addAction(f"Add to queue{many}")
-        add.setEnabled(bool(tracks))
-        add.triggered.connect(lambda: controller.add_to_queue(tracks))
-        radio = menu.addAction("Start radio")
-        radio.setEnabled(track.available)
-        radio.triggered.connect(lambda: controller.start_radio(track))
-        menu.addSeparator()
-        like_text = "Remove from liked songs" if self._liked.is_liked(track.video_id) else "Like"
-        menu.addAction(like_text).triggered.connect(lambda: self._liked.toggle(track))
-        menu.addAction("Copy link").triggered.connect(
-            lambda: QGuiApplication.clipboard().setText(track.link)
+        show_track_menu(
+            self,
+            self.viewport().mapToGlobal(pos),
+            track,
+            self._selected_tracks(index.row()),
+            controller=self._controller,
+            liked=self._liked,
+            navigate=self._navigate,
+            play=lambda: self.play_row(index.row()),
         )
-        menu.exec(self.viewport().mapToGlobal(pos))

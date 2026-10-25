@@ -10,12 +10,16 @@ from typing import Any
 
 from ytm_lite.app.models import (
     Account,
+    Album,
     AlbumRef,
     AlbumSummary,
+    Artist,
     ArtistRef,
     ArtistSummary,
     Playlist,
     PlaylistSummary,
+    SearchItem,
+    SearchResults,
     Track,
 )
 
@@ -123,11 +127,11 @@ def album_summary_from_json(d: Json) -> AlbumSummary:
 
 
 def artist_summary_to_json(a: ArtistSummary) -> Json:
-    return {"id": a.id, "n": a.name, "s": a.subscribers, "th": a.thumbnail}
+    return {"id": a.id, "n": a.name, "s": a.subscribers, "th": a.thumbnail, "au": a.audience}
 
 
 def artist_summary_from_json(d: Json) -> ArtistSummary:
-    return ArtistSummary(d["id"], d["n"], d.get("s"), d.get("th"))
+    return ArtistSummary(d["id"], d["n"], d.get("s"), d.get("th"), d.get("au"))
 
 
 def account_to_json(a: Account) -> Json:
@@ -136,3 +140,103 @@ def account_to_json(a: Account) -> Json:
 
 def account_from_json(d: Json) -> Account:
     return Account(d["n"], d.get("h"), d.get("p"))
+
+
+def album_to_json(a: Album) -> Json:
+    return {
+        "id": a.id,
+        "t": a.title,
+        "a": _refs(a.artists),
+        "y": a.year,
+        "k": a.kind,
+        "th": a.thumbnail,
+        "p": a.playlist_id,
+        "tr": [track_to_json(t) for t in a.tracks],
+    }
+
+
+def album_from_json(d: Json) -> Album:
+    return Album(
+        id=d["id"],
+        title=d["t"],
+        tracks=tuple(track_from_json(t) for t in d["tr"]),
+        artists=_artists(d.get("a")),
+        year=d.get("y"),
+        kind=d.get("k", "Album"),
+        thumbnail=d.get("th"),
+        playlist_id=d.get("p"),
+    )
+
+
+def artist_to_json(a: Artist) -> Json:
+    return {
+        "id": a.id,
+        "n": a.name,
+        "th": a.thumbnail,
+        "s": a.subscribers,
+        "top": [track_to_json(t) for t in a.top_songs],
+        "al": [album_summary_to_json(x) for x in a.albums],
+        "si": [album_summary_to_json(x) for x in a.singles],
+        "p": a.songs_playlist_id,
+        "au": a.audience,
+    }
+
+
+def artist_from_json(d: Json) -> Artist:
+    return Artist(
+        id=d["id"],
+        name=d["n"],
+        thumbnail=d.get("th"),
+        subscribers=d.get("s"),
+        top_songs=tuple(track_from_json(t) for t in d.get("top") or ()),
+        albums=tuple(album_summary_from_json(x) for x in d.get("al") or ()),
+        singles=tuple(album_summary_from_json(x) for x in d.get("si") or ()),
+        songs_playlist_id=d.get("p"),
+        audience=d.get("au"),
+    )
+
+
+def _item_to_json(item: SearchItem) -> Json:
+    if isinstance(item, Track):
+        return {"k": "song", "d": track_to_json(item)}
+    if isinstance(item, AlbumSummary):
+        return {"k": "album", "d": album_summary_to_json(item)}
+    if isinstance(item, ArtistSummary):
+        return {"k": "artist", "d": artist_summary_to_json(item)}
+    return {"k": "playlist", "d": playlist_summary_to_json(item)}
+
+
+def _item_from_json(d: Json) -> SearchItem:
+    kind, data = d["k"], d["d"]
+    if kind == "song":
+        return track_from_json(data)
+    if kind == "album":
+        return album_summary_from_json(data)
+    if kind == "artist":
+        return artist_summary_from_json(data)
+    return playlist_summary_from_json(data)
+
+
+def search_results_to_json(r: SearchResults) -> Json:
+    return {
+        "q": r.query,
+        "f": r.filter,
+        "top": _item_to_json(r.top) if r.top is not None else None,
+        "so": [track_to_json(t) for t in r.songs],
+        "al": [album_summary_to_json(a) for a in r.albums],
+        "ar": [artist_summary_to_json(a) for a in r.artists],
+        "pl": [playlist_summary_to_json(p) for p in r.playlists],
+    }
+
+
+def search_results_from_json(d: Json) -> SearchResults:
+    top = d.get("top")
+    return SearchResults(
+        query=d["q"],
+        filter=d.get("f"),
+        top=_item_from_json(top) if top else None,
+        songs=tuple(track_from_json(t) for t in d.get("so") or ()),
+        albums=tuple(album_summary_from_json(a) for a in d.get("al") or ()),
+        artists=tuple(artist_summary_from_json(a) for a in d.get("ar") or ()),
+        playlists=tuple(playlist_summary_from_json(p) for p in d.get("pl") or ()),
+    )

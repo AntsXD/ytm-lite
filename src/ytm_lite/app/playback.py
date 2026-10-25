@@ -169,6 +169,15 @@ class PlaybackController(QObject):
             if entry is not None:
                 self._play_entry(entry, resume_at=self._last_pos or None, fast=True)
 
+    def play(self) -> None:
+        """Resume (or start the current track); nothing if it's already playing."""
+        if self._state not in (PlaybackState.PLAYING, PlaybackState.LOADING):
+            self.toggle_pause()
+
+    def pause(self) -> None:
+        if self._state is PlaybackState.PLAYING:
+            self.player.set_paused(True)
+
     def next(self) -> None:
         if self._armed is not None and self.player.active():
             uid, _ = self._armed

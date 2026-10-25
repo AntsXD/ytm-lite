@@ -15,6 +15,11 @@ dependencies = [
     "yt-dlp-ejs>=0.8",
     "deno>=2.3",
     "certifi",
+    "winrt-runtime>=4.0.3 ; sys_platform == 'win32'",
+    "winrt-windows-foundation>=4 ; sys_platform == 'win32'",
+    "winrt-windows-media>=4 ; sys_platform == 'win32'",
+    "winrt-windows-media-interop>=4 ; sys_platform == 'win32'",
+    "winrt-windows-storage-streams>=4 ; sys_platform == 'win32'",
 ]
 
 [project.gui-scripts]

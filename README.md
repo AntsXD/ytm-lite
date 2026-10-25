@@ -5,8 +5,8 @@ Qt Widgets UI, libmpv for audio, no embedded browser of any kind.
 
 Unofficial: not affiliated with or endorsed by Google or YouTube. Use it with your own account.
 
-**Status:** milestone 3 of 5 (play queue and now-playing bar). Next: search, album and artist
-pages, the tray and media keys (milestone 4).
+**Status:** milestone 4 of 5 (search, album and artist pages, the tray, media keys). Next: lyrics,
+the home feed, a mini player, a settings dialog and the packaged build (milestone 5).
 
 ## How it works
 
@@ -36,6 +36,14 @@ ytm-lite (player process)                      worker (started on demand)
   also works.
 - Library lists are cached on disk and shown at startup, then refreshed in the background.
   Long playlists show their first 100 tracks at once and fill in the rest.
+- **Closing the window frees what the window costs.** The music keeps playing from the tray,
+  but the window itself (widgets, open pages, decoded covers) is destroyed and the working set
+  trimmed, so a game gets that RAM back. Clicking the tray icon rebuilds the window, on the page
+  you left, in a fraction of a second.
+- **The Windows media overlay is set up the first time something plays.** Loading pywinrt costs
+  ~5 MB of private memory (twice that if it were allowed to pull in `asyncio` and OpenSSL, which
+  it only needs for `await`), so an app idling in the tray never loads it. Covers are handed to
+  Windows as bytes from the app's own cover cache, not as URLs for WinRT to download.
 
 ## Setup (Windows)
 
@@ -57,18 +65,37 @@ uv run python -m ytm_lite
 
 - The window is three rounded panels on black (your library, the page you're on, the queue)
   with the player along the bottom; the accent color is violet.
+- **Search** with the box at the top (Ctrl+F). Suggestions appear as you type; Enter or a
+  suggestion runs the search. "All" shows the top result and the best songs, albums, artists
+  and playlists; the Songs, Albums, Artists and Playlists tabs load when you open them. A song
+  played from search is followed by its radio.
+- Albums and artists open as pages, from search, from your library or from a song's
+  right-click menu. The arrows above the page, Alt+← / Alt+→ and the mouse's back and forward
+  buttons move through the pages you've visited.
 - Double-click a track to play it; the rest of the list becomes the queue. Right-click a track
-  (or a selection) for Play next, Add to queue, Start radio, Like and Copy link.
+  (or a selection) for Play, Play next, Add to queue, Start radio, Go to album, Go to artist,
+  Like and Copy link.
 - The list button at the right of the bar opens the queue: drag songs to reorder them, Delete
   removes the selection, double-click jumps to a song. With **Autoplay** on, radio suggestions
   for the last song are added when two songs are left.
-- Shortcuts: Space play/pause, Ctrl+→ / Ctrl+← next/previous, Ctrl+L like, Ctrl+Q quit.
+- **Closing the window keeps the music playing in the tray.** Click the tray icon to bring the
+  window back (middle-click: play/pause); its menu has Play/Pause, Next, Previous and Quit. To
+  make closing quit instead, set `"close_to_tray": false` in `settings.json` (a settings dialog
+  comes in milestone 5). `--start-minimized` starts in the tray, without a window.
+- **Media keys and the Windows media overlay** (the volume flyout) work: the overlay shows the
+  song, its cover and the position, with play/pause, next, previous and seeking. On Linux the
+  app is an MPRIS player, so desktop media widgets and `playerctl` control it.
+- **One copy per profile.** Starting the app again brings up the running copy's window;
+  `--play-pause`, `--next` and `--previous` (or `--prev`) are passed to the running copy, e.g.
+  from a hotkey tool: `uv run python -m ytm_lite --next`.
+- Shortcuts: Space play/pause, Ctrl+→ / Ctrl+← next/previous, Ctrl+L like, Ctrl+F search,
+  Alt+← / Alt+→ back/forward, Ctrl+Q quit.
 - The queue, your place in it (paused), shuffle and repeat, volume and the window layout come back
   at the next start. They are saved in `queue.json` and `state.json` next to `settings.json`.
 
 Ctrl+Shift+D toggles the debug overlay (memory per process, threads, worker and libmpv state,
 queue, cover cache, last track-transition gap). Options: `--debug` (verbose log),
-`--start-minimized`.
+`--start-minimized` (start in the tray).
 
 Logs go to `%LOCALAPPDATA%\ytm-lite\Logs\ytm-lite.log` (1 MB × 3, secrets redacted).
 `YTM_LITE_HOME=<folder>` puts config, cache and logs in one folder instead.
@@ -91,7 +118,8 @@ Whichever you use, the Premium account should be the browser's default Google ac
 always uses account index 0). Credentials are checked with YouTube before anything is saved,
 stored encrypted with Windows DPAPI (owner-only file elsewhere), and handed to the worker in
 memory; they are never written to disk in plain text or logged. "Continue without signing in"
-keeps search-free playback of the test tracks available (search arrives in milestone 4).
+still lets you search, open albums and artists and play anything (standard quality); your
+library and likes need a sign-in.
 
 ## Develop
 
@@ -115,25 +143,64 @@ Diagnostics:
 ## Measure
 
 ```bash
-uv run python tools/measure.py                       # startup, idle, playing, window, queue
-uv run python tools/measure.py playing window queue --real-profile --playlist LM
+uv run python tools/measure.py         # startup, tray, tray-after, idle, playing, window, queue
+uv run python tools/measure.py tray tray-after playing window queue --real-profile --playlist LM
 uv run python tools/spikes/s2_libmpv.py --variant small
 uv run python tools/spikes/s3_qt_tray.py
+uv run python tools/spikes/s5_smtc.py interop
 ```
 
 `measure.py` launches the app (by default in a throwaway signed-out profile under `.measure/`;
 with `--real-profile`, your own signed-in one) and samples the whole process tree once a second
 with psutil. **RSS** is the Windows working set; **private** is private bytes. "Steady" is
 measured after the worker's idle exit; "peak" includes the worker and its JS runtime. The venv's
-`python.exe` redirector process is excluded because a packaged build doesn't have it. The
-`window` scenario opens a large playlist (a public 462-track one, or `LM` = your Liked Songs)
+`python.exe` redirector process is excluded because a packaged build doesn't have it. `tray`
+starts the app in the tray with nothing playing; `tray-after` shows a large playlist in the
+window for 30 s, then closes the window to the tray; both sample for 60 s once the worker has
+exited. `playing` plays the test tracks from the tray (until milestone 3: a minimized window).
+The `window` scenario opens a large playlist (a public 462-track one, or `LM` = your Liked Songs)
 while the test tracks play; `queue` plays that playlist itself with the queue panel open.
-Measurement runs never save the playback session, so `--real-profile` leaves your queue alone.
+Measurement runs never save the session, so `--real-profile` leaves your queue alone.
 
 ## Measured numbers
 
 Windows 11, Python 3.14.7, PySide6 6.12.0, mpv 0.41 (shinchiro 2026-10-21), yt-dlp 2026.10.21,
-ytmusicapi 1.12.3, running from source.
+ytmusicapi 1.12.3, pywinrt 4.0.3, running from source.
+
+### Milestone 4 (2026-10-25)
+
+| Spec target | Signed in (677-song library, Premium) | Signed out | |
+|---|---|---|---|
+| Idle in the tray < 80 MB | 13.8 MB RSS / 38.9 MB private, started in the tray (Liked Songs loads ~5 s in, after the working set was trimmed); 5.0 MB / 52.9 MB after Liked Songs was shown in the window and the window closed | 3.3 MB / 37.4 MB started in the tray; 4.7 MB / 51.9 MB after a 462-track playlist was shown and the window closed | ✅ |
+| CPU idle in the tray | 0.03% of one core | 0.00% (no timers, no polling) | ✅ |
+| Playing, window open, 200+ track list < 150 MB | 146.0 MB / 92.6 MB steady (Liked Songs on screen); 228 MB peak while the worker is up | 140.2 MB / 90.1 MB steady (public 462-track playlist); 211 MB peak | ✅ steady |
+| Same, that list playing as a queue with the queue panel open | 147.4 MB / 93.8 MB steady (677-song queue); 232 MB peak | 145.0 MB / 91.6 MB steady (462-song queue); 220 MB peak | ✅ steady |
+| Playing, in the tray | 72.4 MB / 73.2 MB steady; 151 MB peak | 70.2 MB / 71.1 MB steady; 129 MB peak | ✅ |
+| CPU playing in the tray < 1% | 2.2% of one core *including two resolves*; 0.11% of 20 logical CPUs | 1.7% of one core including two resolves; 0.08% of 20 logical CPUs | ✅ |
+| Cold start < 2 s | 0.77 s median (0.30 s to READY when starting in the tray) | 0.77 s median | ✅ |
+
+Playing from the tray takes 70–72 MB, where milestone 3's minimized window took 108–131 MB: in
+the tray none of the window's memory is left. With the window open, milestone 4 costs more than
+milestone 3, measured side by side on the same day: idle, 92.6 MB / 53.5 MB against
+87.2 MB / 49.0 MB (the new pages' code, the top bar, the tray icon). Once something has played,
+the media overlay adds ~5 MB private (pywinrt) and ~6 MB of working set in Windows DLLs, plus
+~3 MB of working set once a cover is shown. That is why the playing-with-the-window-open rows are
+11–17 MB above milestone 3's and closer to the 150 MB line. The cold start differs from
+milestone 3's table because of the machine, not the code: the milestone 3 code starts in 0.70 s
+today, and milestone 4 adds ~70 ms.
+
+Findings that shaped milestone 4:
+
+| Finding | Decision |
+|---|---|
+| pywinrt imports `asyncio` (and with it `ssl` and OpenSSL) as it loads, only so WinRT calls can be awaited: 6 of the ~11 MB private it cost | It's imported with a stand-in for `asyncio` that loads the real one only if pywinrt ever uses it (the app never awaits): pywinrt now costs ~5 MB private, from the first song played |
+| `hashlib`, used to name the single-instance socket, loads OpenSSL into the player process too | A CRC names the socket |
+| Spike S5, two ways to drive the overlay (measured before the `asyncio` fix): `get_for_window` on a hidden window +27 MB working set / +13–14 MB private, 14 threads; a `MediaPlayer`'s controls +32 MB / +13 MB, 18–19 threads | `get_for_window`, on a hidden window of its own, so tray mode (which destroys the main window) doesn't touch it |
+| Given as a URL, the cover is downloaded by WinRT inside the app's process (+10 MB working set, 4 threads); given as bytes it costs +3 MB working set (Windows' image codecs) and +0.7 MB private | Covers go over as JPEG bytes from the app's own cover cache |
+| A gapless track change never changes the play state, so an overlay updated only on play/pause/seek kept the previous song's length | The timeline is also sent whenever mpv restarts playback (a new track or a seek) |
+| A second launch that writes its command and exits at once could lose it: Qt drops unsent bytes when the socket object goes away, and the running copy may see the hang-up before reading | The sender waits until the line is out and the disconnect is done; the receiver also reads what arrived before the connection was accepted (tested across two processes) |
+| PySide6's QtDBus sends a Python int as int32 when it fits; MPRIS wants int64 positions and lengths | Position and Seeked are declared `qlonglong`; empty string lists go out as typed arrays. Checked over a real session bus in WSL (Ubuntu) with `busctl`. A length inside Metadata still goes out as int32 under ~35 minutes (GNOME Shell, Plasma and playerctl read either) |
+| ytmusicapi files the number on a search's top-result artist card as "subscribers"; YouTube labels it "monthly audience" (the artist's page has both) | Shown as monthly audience; the artist page shows subscribers and monthly audience |
 
 ### Milestone 3 (2026-10-25)
 

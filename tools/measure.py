@@ -8,11 +8,13 @@ Usage:
     uv run python tools/measure.py playing --seconds 30
 
 Scenarios:
-    startup   cold start to first paint, median of 5 runs
-    idle      window open, nothing playing
-    playing   test tracks playing, window minimized (RAM + CPU)
-    window    test tracks playing, window open, a big playlist on screen
-    queue     that big playlist playing as the queue, queue panel open
+    startup     cold start to first paint, median of 5 runs
+    tray        started in the tray (no window), nothing playing (RAM + CPU)
+    tray-after  a big playlist shown in the window, then the window closed to the tray
+    idle        window open, nothing playing
+    playing     test tracks playing, in the tray (RAM + CPU)
+    window      test tracks playing, window open, a big playlist on screen
+    queue       that big playlist playing as the queue, queue panel open
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ REAL_PROFILE = False  # --real-profile: measure your signed-in profile instead o
 LOG_OFFSET: dict[str, int] = {}
 # Rolling Stone's 500 Greatest Songs (public): stands in for "a 200-track playlist visible".
 BIG_PLAYLIST = "PLciALUPf8sIJlvH350O8PWh4UbSbOffSJ"
+TRAY_AFTER = 30  # seconds the window stays open in the tray-after scenario
 
 
 @dataclass
@@ -232,6 +235,53 @@ def run_window_idle(seconds: float) -> Result:
     )
 
 
+def run_tray(seconds: float, playlist: str | None = None) -> Result:
+    """Idle in the tray: started there, or (with a playlist) after that playlist was shown
+    in the window and the window was closed to the tray."""
+    scenario = "tray-after" if playlist else "tray"
+    if playlist:
+        extra = ["--open-playlist", playlist, "--tray-after", str(TRAY_AFTER)]
+    else:
+        extra = ["--start-minimized"]
+    proc, ready_file, _ = launch(scenario, *extra)
+    try:
+        wait_ready(ready_file)
+        if playlist and not wait_for_log(scenario, "playlist loaded", TRAY_AFTER):
+            print("   (warning: the playlist didn't load before the window closed)")
+        if not wait_for_log(scenario, "in the tray", TRAY_AFTER + 30):
+            print("   (warning: never reached the tray)")
+        root = psutil.Process(proc.pid)
+        # Steady once the working set has been trimmed (1.5 s in) and the worker, if a
+        # library refresh or the playlist started it, has exited (15 s after its last call).
+        t0 = time.time()
+        while True:
+            first = sample(root)
+            if (time.time() - t0 >= 5 and first.processes == 1) or time.time() - t0 > 60:
+                break
+            time.sleep(1)
+        samples = [first]
+        steady_from = time.time()
+        while time.time() < steady_from + seconds:
+            time.sleep(1)
+            samples.append(sample(root))
+        wall = time.time() - steady_from
+    finally:
+        stop(proc)
+    LAST_BREAKDOWN.extend(samples[-1].breakdown)
+    cpu_core = cpu_used(samples) / wall * 100
+    cpus = psutil.cpu_count() or 1
+    return Result(
+        "idle in the tray, after showing a big playlist" if playlist else "idle in the tray",
+        {
+            "RSS (median)": mb(statistics.median(s.rss for s in samples)),
+            "RSS (max)": mb(max(s.rss for s in samples)),
+            "private (median)": mb(statistics.median(s.private for s in samples)),
+            "threads": str(samples[-1].threads),
+            "CPU": f"{cpu_core:.2f}% of one core = {cpu_core / cpus:.3f}% of {cpus} logical CPUs",
+        },
+    )
+
+
 def run_playing(
     seconds: float, minimized: bool, playlist: str | None = None, as_queue: bool = False
 ) -> Result:
@@ -271,7 +321,7 @@ def run_playing(
     LAST_BREAKDOWN.extend(steady[-1].breakdown)
     cpu_core = cpu_used(samples) / wall * 100
     cpus = psutil.cpu_count() or 1
-    label = "playing, minimized" if minimized else "playing, window open"
+    label = "playing, in the tray" if minimized else "playing, window open"
     if as_queue:
         label = "playing a big playlist, queue panel open"
     elif playlist:
@@ -294,7 +344,9 @@ def run_playing(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "scenarios", nargs="*", default=["startup", "idle", "playing", "window", "queue"]
+        "scenarios",
+        nargs="*",
+        default=["startup", "tray", "tray-after", "idle", "playing", "window", "queue"],
     )
     parser.add_argument("--seconds", type=float, default=60)
     parser.add_argument(
@@ -318,6 +370,10 @@ def main() -> int:
         print(f"== {scenario}")
         if scenario == "startup":
             result = run_startup()
+        elif scenario == "tray":
+            result = run_tray(args.seconds)
+        elif scenario == "tray-after":
+            result = run_tray(args.seconds, playlist=args.playlist)
         elif scenario == "idle":
             result = run_window_idle(min(args.seconds, 20))
         elif scenario == "playing":

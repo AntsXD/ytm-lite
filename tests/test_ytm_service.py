@@ -59,6 +59,18 @@ class FakeClient:
         tracks = [{"videoId": f"v{i}", "title": f"T{i}"} for i in range(3)]
         return {"title": "Mix", "trackCount": 3, "tracks": tracks}
 
+    def search(self, query: str, filter: str | None, limit: int) -> list[dict[str, Any]]:
+        return [{"resultType": "song", "videoId": "s1", "title": query, "category": "Songs"}]
+
+    def get_search_suggestions(self, query: str) -> list[Any]:
+        return [f"{query} one", f"{query} two", {"odd": True}]
+
+    def get_album(self, browse_id: str) -> dict[str, Any]:
+        return {"title": "Album", "tracks": [{"videoId": "a1", "title": "One"}]}
+
+    def get_artist(self, channel_id: str) -> dict[str, Any]:
+        return {"name": "Artist", "songs": {"results": [{"videoId": "x", "title": "Hit"}]}}
+
     def get_watch_playlist(self, videoId: str, radio: bool, limit: int) -> dict[str, Any]:
         assert radio
         tracks = [{"videoId": videoId, "title": "Seed", "length": "3:07"}]
@@ -86,6 +98,11 @@ def test_calls_return_compact_json(service: tuple[YtmService, list[Any]]) -> Non
     playlist = svc.call("playlist", {"playlist_id": "PL1", "limit": None})
     assert playlist["id"] == "PL1" and playlist["x"] == 1
     assert [t["v"] for t in playlist["tr"]] == ["v0", "v1", "v2"]
+    found = svc.call("search", {"query": "queen"})
+    assert [t["v"] for t in found["so"]] == ["s1"]
+    assert svc.call("search_suggestions", {"query": "qu"}) == ["qu one", "qu two"]
+    assert svc.call("album", {"browse_id": "MPREb_1"})["tr"][0]["al"] == ["Album", "MPREb_1"]
+    assert svc.call("artist", {"channel_id": "UC1"})["top"][0]["v"] == "x"
     radio = svc.call("radio", {"video_id": "seed"})
     assert [t["v"] for t in radio] == ["seed", "r0", "r1"]
     assert radio[0]["d"] == 187

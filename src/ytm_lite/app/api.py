@@ -14,10 +14,13 @@ from ytm_lite.app.auth import Credentials
 from ytm_lite.app.models import (
     LIKED_SONGS_ID,
     Account,
+    Album,
     AlbumSummary,
+    Artist,
     ArtistSummary,
     Playlist,
     PlaylistSummary,
+    SearchResults,
     Track,
 )
 from ytm_lite.app.worker_client import WorkerError, WorkerProcess
@@ -105,3 +108,19 @@ class Api:
         """Radio suggestions seeded by a track (works signed out too); the seed itself
         usually comes back first."""
         return [codec.track_from_json(t) for t in self._call("radio", {"video_id": video_id})]
+
+    # These work signed out too.
+
+    def search(self, query: str, filter_: str | None = None) -> SearchResults:
+        """`filter_`: None for everything, or songs/albums/artists/playlists."""
+        raw = self._call("search", {"query": query, "filter": filter_})
+        return codec.search_results_from_json(raw)
+
+    def search_suggestions(self, query: str) -> list[str]:
+        return [str(s) for s in self._call("search_suggestions", {"query": query})]
+
+    def album(self, browse_id: str) -> Album:
+        return codec.album_from_json(self._call("album", {"browse_id": browse_id}))
+
+    def artist(self, channel_id: str) -> Artist:
+        return codec.artist_from_json(self._call("artist", {"channel_id": channel_id}))

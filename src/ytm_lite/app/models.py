@@ -93,6 +93,50 @@ class ArtistSummary:
     name: str
     subscribers: str | None = None
     thumbnail: str | None = None
+    audience: str | None = None  # monthly audience (a search's top-result card)
+
+
+@dataclass(frozen=True, slots=True)
+class Album:
+    id: str  # browseId (MPRE...)
+    title: str
+    tracks: tuple[Track, ...]
+    artists: tuple[ArtistRef, ...] = ()
+    year: str | None = None
+    kind: str = "Album"  # "Album", "Single", "EP"
+    thumbnail: str | None = None
+    playlist_id: str | None = None  # the album as a playlist (OLAK5uy_...)
+
+    @property
+    def artist_text(self) -> str:
+        return ", ".join(a.name for a in self.artists)
+
+
+@dataclass(frozen=True, slots=True)
+class Artist:
+    id: str  # channel id
+    name: str
+    thumbnail: str | None = None
+    subscribers: str | None = None
+    top_songs: tuple[Track, ...] = ()
+    albums: tuple[AlbumSummary, ...] = ()
+    singles: tuple[AlbumSummary, ...] = ()
+    songs_playlist_id: str | None = None  # all of the artist's songs, as a playlist
+    audience: str | None = None  # monthly audience
+
+
+SearchItem = Track | AlbumSummary | ArtistSummary | PlaylistSummary
+
+
+@dataclass(frozen=True, slots=True)
+class SearchResults:
+    query: str
+    filter: str | None = None  # None: everything ("All"); else songs/albums/artists/playlists
+    top: SearchItem | None = None
+    songs: tuple[Track, ...] = ()
+    albums: tuple[AlbumSummary, ...] = ()
+    artists: tuple[ArtistSummary, ...] = ()
+    playlists: tuple[PlaylistSummary, ...] = ()
 
 
 def format_duration(seconds: float | None) -> str:

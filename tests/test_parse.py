@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ytm_lite.app import parse
-from ytm_lite.app.models import AlbumRef, ArtistRef
+from ytm_lite.app.models import AlbumRef, ArtistRef, ArtistSummary, Track
 
 THUMBS = [
     {"url": "https://lh3.googleusercontent.com/x=w60-h60-l90-rj", "width": 60, "height": 60},
@@ -121,3 +121,125 @@ def test_numbers() -> None:
     assert parse.to_int(None) is None
     assert parse.parse_duration("3:05") == 185
     assert parse.parse_duration("live") is None
+
+
+SEARCH_ALL: list[dict[str, Any]] = [
+    {
+        "category": "Top result",
+        "resultType": "video",
+        "videoId": "vU05Eksc_iM",
+        "title": "Wonderwall",
+        "artists": [{"name": "Oasis", "id": "UCm"}],
+        "duration": "4:38",
+        "duration_seconds": 278,
+    },
+    {
+        "category": "Songs",
+        "resultType": "song",
+        "videoId": "ZrOKjDZOtkA",
+        "title": "Wonderwall",
+        "artists": [{"name": "Oasis", "id": "UCm"}],
+        "album": {"name": "Morning Glory", "id": "MPREb_9n"},
+        "duration_seconds": 259,
+        "thumbnails": THUMBS,
+    },
+    {"category": "Videos", "resultType": "video", "videoId": "bx1", "title": "Wonderwall (MV)"},
+    {
+        "category": "Albums",
+        "resultType": "album",
+        "browseId": "MPREb_IIn",
+        "title": "Morning Glory",
+        "type": "Album",
+        "artist": "Oasis",
+        "year": "1995",
+    },
+    {
+        "category": "Community playlists",
+        "resultType": "playlist",
+        "browseId": "VLPLK1",
+        "title": "Wonderwall - Oasis",
+        "author": "Tate",
+        "itemCount": "174",
+    },
+    {"category": "Artists", "resultType": "artist", "browseId": "UCm", "artist": "Oasis"},
+    {"category": "Profiles", "resultType": "profile", "title": "Fan", "browseId": "UCx"},
+]
+
+
+def test_search_results_sort_kinds_and_keep_the_top_result() -> None:
+    results = parse.search_results(SEARCH_ALL, "wonderwall", None)
+    assert isinstance(results.top, Track) and results.top.video_id == "vU05Eksc_iM"
+    assert [t.video_id for t in results.songs] == ["ZrOKjDZOtkA", "bx1"]  # videos last
+    assert results.albums[0].artists == (ArtistRef("Oasis"),)
+    assert results.playlists[0].id == "PLK1" and results.playlists[0].author == "Tate"
+    assert results.playlists[0].count == 174
+    assert results.artists[0].name == "Oasis"
+
+
+def test_album_tracks_take_the_album_and_its_cover() -> None:
+    raw = {
+        "title": "Revival",
+        "type": "Album",
+        "thumbnails": THUMBS,
+        "artists": [{"name": "Eminem", "id": "UCe"}],
+        "year": "2017",
+        "audioPlaylistId": "OLAK5uy_n",
+        "tracks": [
+            {"videoId": "a", "title": "One", "album": "Revival", "thumbnails": None, "artists": []},
+            {"videoId": "b", "title": "Two", "duration": "3:00", "isAvailable": False},
+        ],
+    }
+    album = parse.album(raw, "MPREb_x")
+    assert [t.title for t in album.tracks] == ["One", "Two"]
+    assert all(t.album == AlbumRef("Revival", "MPREb_x") for t in album.tracks)
+    assert all(t.thumbnail == THUMBS[-1]["url"] for t in album.tracks)
+    assert album.tracks[0].artists == (ArtistRef("Eminem", "UCe"),)
+    assert not album.tracks[1].available
+    assert (album.year, album.kind, album.playlist_id) == ("2017", "Album", "OLAK5uy_n")
+
+
+def test_artist_page() -> None:
+    raw = {
+        "name": "Oasis",
+        "channelId": "UCdifferent",
+        "subscribers": "3.86M",
+        "monthlyListeners": "21.4M",
+        "thumbnails": THUMBS,
+        "songs": {
+            "browseId": "VLPLMp",
+            "results": [{"videoId": "z", "title": "Wonderwall", "artists": [{"name": "Oasis"}]}],
+        },
+        "albums": {"results": [{"title": "Familiar", "year": "2018", "browseId": "MPREb_A"}]},
+        "singles": {"results": [{"title": "Stand By Me", "browseId": "MPREb_7"}]},
+    }
+    artist = parse.artist(raw, "UCm")
+    assert artist.id == "UCm" and artist.songs_playlist_id == "PLMp"
+    assert (artist.subscribers, artist.audience) == ("3.86M", "21.4M")
+    assert [t.video_id for t in artist.top_songs] == ["z"]
+    assert artist.albums[0].artists == (ArtistRef("Oasis", "UCm"),)
+    assert artist.albums[0].kind == "Album" and artist.singles[0].kind == "Single"
+
+
+def test_top_result_card_artist_and_its_songs() -> None:
+    raw = [
+        {
+            "category": "Top result",
+            "resultType": "artist",
+            "subscribers": "67.8M",
+            "artists": [{"name": "Daft Punk", "id": "UCRr"}],
+        },
+        {"resultType": "song", "videoId": "k1", "title": "Instant Crush", "duration": "5:38"},
+        {
+            "resultType": "song",
+            "videoId": "k2",
+            "title": "Crescendolls",
+            "artists": [{"name": "X"}],
+        },
+    ]
+    results = parse.search_results(raw, "daft punk", None)
+    top = results.top
+    assert isinstance(top, ArtistSummary) and top.id == "UCRr"
+    # The card's number is the monthly audience, whatever ytmusicapi calls it.
+    assert (top.subscribers, top.audience) == (None, "67.8M")
+    assert results.songs[0].artists == (ArtistRef("Daft Punk", "UCRr"),)
+    assert results.songs[1].artists == (ArtistRef("X"),)

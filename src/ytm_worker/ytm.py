@@ -31,6 +31,8 @@ REQUEST_TIMEOUT = 15
 BACKGROUND_INTERVAL = 0.1  # spec: >= 100 ms between paging/prefetch calls
 LIBRARY_LIMIT = 5000  # "everything" for library lists
 RADIO_LIMIT = 25  # tracks per radio top-up (one request)
+SEARCH_LIMIT = 20  # results per search (ytmusicapi's default page)
+SUGGESTIONS = 8
 POOL_SIZE = 2
 
 
@@ -261,6 +263,28 @@ def _radio(c: Any, args: dict[str, Any]) -> Any:
     return [codec.track_to_json(t) for t in parse.tracks(raw.get("tracks"))]
 
 
+def _search(c: Any, args: dict[str, Any]) -> Any:
+    query = str(args["query"])
+    filter_ = args.get("filter") or None
+    raw = c.search(query, filter=filter_, limit=int(args.get("limit") or SEARCH_LIMIT))
+    return codec.search_results_to_json(parse.search_results(raw, query, filter_))
+
+
+def _search_suggestions(c: Any, args: dict[str, Any]) -> Any:
+    found = c.get_search_suggestions(str(args["query"]))
+    return [s for s in found if isinstance(s, str)][:SUGGESTIONS]
+
+
+def _album(c: Any, args: dict[str, Any]) -> Any:
+    browse_id = str(args["browse_id"])
+    return codec.album_to_json(parse.album(c.get_album(browse_id), browse_id))
+
+
+def _artist(c: Any, args: dict[str, Any]) -> Any:
+    channel_id = str(args["channel_id"])
+    return codec.artist_to_json(parse.artist(c.get_artist(channel_id), channel_id))
+
+
 _OPERATIONS: dict[str, Callable[[Any, dict[str, Any]], Any]] = {
     "account_info": _account_info,
     "library_playlists": _library_playlists,
@@ -269,4 +293,8 @@ _OPERATIONS: dict[str, Callable[[Any, dict[str, Any]], Any]] = {
     "playlist": _playlist,
     "rate_song": _rate_song,
     "radio": _radio,
+    "search": _search,
+    "search_suggestions": _search_suggestions,
+    "album": _album,
+    "artist": _artist,
 }

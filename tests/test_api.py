@@ -10,7 +10,15 @@ import pytest
 from ytm_lite.app import codec
 from ytm_lite.app.api import Api, ApiError, ApiErrorKind
 from ytm_lite.app.auth import Cookie, Credentials
-from ytm_lite.app.models import Account, Playlist, Track
+from ytm_lite.app.models import (
+    Account,
+    Album,
+    Artist,
+    ArtistSummary,
+    Playlist,
+    SearchResults,
+    Track,
+)
 from ytm_lite.app.worker_client import WorkerError, WorkerProcess
 
 
@@ -89,3 +97,22 @@ def test_worker_errors_become_api_errors(tmp_path: Path) -> None:
     with pytest.raises(ApiError) as excinfo:
         api.rate_song("v", True)
     assert excinfo.value.kind is ApiErrorKind.AUTH
+
+
+def test_search_album_and_artist_work_signed_out() -> None:
+    api, worker = make()
+    top = ArtistSummary("UCq", "Queen", thumbnail="https://t/q", audience="38M")
+    results = SearchResults("q", None, top, songs=(Track("s", "S"),))
+    worker.answers["search"] = codec.search_results_to_json(results)
+    worker.answers["search_suggestions"] = ["queen", "queen bohemian rhapsody"]
+    album = Album("MPREb_x", "Revival", (Track("a", "A"),), year="2017")
+    worker.answers["album"] = codec.album_to_json(album)
+    artist = Artist(
+        "UCm", "Oasis", top_songs=(Track("z", "Z"),), songs_playlist_id="PLMp", audience="21M"
+    )
+    worker.answers["artist"] = codec.artist_to_json(artist)
+    assert api.search("q") == results
+    assert worker.calls[-1] == ("search", {"query": "q", "filter": None}, False, None)
+    assert api.search_suggestions("que") == ["queen", "queen bohemian rhapsody"]
+    assert api.album("MPREb_x") == album
+    assert api.artist("UCm") == artist

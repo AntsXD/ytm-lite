@@ -33,7 +33,9 @@ GAP = 8  # between panels
 _QSS = f"""
 #Canvas {{ background: {CANVAS}; }}
 #Panel {{ background: {PANEL}; border-radius: {RADIUS}px; }}
-#Panel QAbstractItemView {{ background: transparent; border: none; outline: 0; }}
+#Panel QAbstractItemView, #ContentPanel QAbstractItemView {{
+    background: transparent; border: none; outline: 0;
+}}
 QSplitter::handle {{ background: transparent; }}
 QHeaderView {{ background: transparent; border: none; }}
 QHeaderView::section {{
@@ -65,6 +67,22 @@ QPushButton#Account {{
 }}
 QPushButton#Account:hover {{ background: {HOVER}; }}
 QPushButton#Account::menu-indicator {{ width: 0; image: none; }}
+QToolButton#Round {{ background: rgba(0, 0, 0, 0.55); border-radius: 16px; padding: 4px; }}
+QToolButton#Round:hover {{ background: rgba(0, 0, 0, 0.8); }}
+QToolButton#Round:disabled {{ background: rgba(0, 0, 0, 0.3); }}
+QLineEdit#Search {{
+    background: {SELECTED}; border: 1px solid transparent; border-radius: 18px;
+    padding: 7px 12px 7px 6px;
+}}
+QLineEdit#Search:hover {{ background: #333333; }}
+QLineEdit#Search:focus {{ border-color: {TEXT}; background: #333333; }}
+QListView#Suggestions {{
+    background: {RAISED}; border: 1px solid #3a3a3a; padding: 4px; outline: 0;
+}}
+QListView#Suggestions::item {{ padding: 7px 10px; border-radius: 4px; color: {TEXT}; }}
+QListView#Suggestions::item:selected {{ background: #3e3e3e; }}
+QPushButton#Chip {{ padding: 6px 14px; }}
+QPushButton#Chip:checked {{ background: {TEXT}; color: #000000; }}
 QPushButton#Flat {{ background: transparent; color: {TEXT_DIM}; padding: 4px 10px; }}
 QPushButton#Flat:hover {{ color: {TEXT}; background: {HOVER}; }}
 QLineEdit, QPlainTextEdit, QComboBox {{

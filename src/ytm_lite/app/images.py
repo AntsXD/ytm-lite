@@ -6,7 +6,6 @@ and the queue is capped, so fast scrolling doesn't build a backlog of off-screen
 
 from __future__ import annotations
 
-import re
 from collections import OrderedDict
 from pathlib import Path
 
@@ -19,32 +18,15 @@ from PySide6.QtNetwork import (
     QNetworkRequest,
 )
 
+from ytm_lite.app.thumbnails import image_key, sized_url
+
+__all__ = ["ImageLoader", "image_key", "sized_url"]
+
 DISK_CACHE_BYTES = 200 * 1024 * 1024
 MEMORY_BYTES = 6 * 1024 * 1024
 MEMORY_ITEMS = 150
 MAX_IN_FLIGHT = 6
 MAX_QUEUED = 120
-
-_GOOGLE_IMAGE = re.compile(
-    r"^(https://(?:lh\d|yt\d)\.(?:googleusercontent|ggpht)\.com/[^=?#]+)(?:=[^?#]*)?$"
-)
-_YTIMG = re.compile(r"^(https://i\d?\.ytimg\.com/vi(?:_webp)?/[^/]+/)")
-
-
-def sized_url(url: str, px: int) -> str:
-    """Ask Google's image servers for roughly `px` pixels instead of the full size."""
-    match = _GOOGLE_IMAGE.match(url)
-    if match:
-        return f"{match.group(1)}=w{px}-h{px}-l90-rj"
-    match = _YTIMG.match(url)
-    if match:
-        variant = "default.jpg" if px <= 90 else "mqdefault.jpg" if px <= 180 else "hqdefault.jpg"
-        return match.group(1) + variant
-    return url
-
-
-def image_key(url: str, px: int) -> str:
-    return f"{px}|{url}"
 
 
 class ImageLoader(QObject):
