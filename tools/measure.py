@@ -34,6 +34,10 @@ ROOT = Path(__file__).resolve().parent.parent
 MEASURE_DIR = ROOT / ".measure"
 VENV_SCRIPTS = (ROOT / ".venv" / "Scripts").resolve()
 LAST_BREAKDOWN: list[str] = []  # per-process lines from the last sample of a scenario
+REAL_PROFILE = False  # --real-profile: measure your signed-in profile instead of a throwaway one
+LOG_OFFSET: dict[str, int] = {}
+# Rolling Stone's 500 Greatest Songs (public): stands in for "a 200-track playlist visible".
+BIG_PLAYLIST = "PLciALUPf8sIJlvH350O8PWh4UbSbOffSJ"
 
 
 @dataclass
@@ -42,8 +46,20 @@ class Sample:
     private: int
     threads: int
     processes: int
-    cpu: float  # cumulative CPU seconds of the tree
+    cpu: dict[int, float]  # cumulative CPU seconds per pid
     breakdown: list[str] = field(default_factory=list)
+
+
+def cpu_used(samples: list[Sample]) -> float:
+    """CPU seconds used over the samples, counting processes that started or exited
+    in between (a plain sum of the tree would drop an exited worker's time)."""
+    lowest: dict[int, float] = {}
+    highest: dict[int, float] = {}
+    for s in samples:
+        for pid, seconds in s.cpu.items():
+            lowest[pid] = min(lowest.get(pid, seconds), seconds)
+            highest[pid] = max(highest.get(pid, seconds), seconds)
+    return sum(highest[pid] - lowest[pid] for pid in highest)
 
 
 @dataclass
@@ -64,7 +80,7 @@ def is_venv_launcher(proc: psutil.Process) -> bool:
 
 def sample(root: psutil.Process) -> Sample:
     rss = private = threads = count = 0
-    cpu = 0.0
+    cpu: dict[int, float] = {}
     breakdown: list[str] = []
     try:
         procs = [root, *root.children(recursive=True)]
@@ -80,7 +96,7 @@ def sample(root: psutil.Process) -> Sample:
                 private += getattr(mem, "private", 0)
                 threads += proc.num_threads()
                 times = proc.cpu_times()
-                cpu += times.user + times.system
+                cpu[proc.pid] = times.user + times.system
                 count += 1
                 cmd = " ".join(proc.cmdline()[1:4])
                 breakdown.append(
@@ -93,12 +109,21 @@ def sample(root: psutil.Process) -> Sample:
 
 
 def launch(scenario: str, *extra: str) -> tuple[subprocess.Popen[bytes], Path, float]:
-    home = MEASURE_DIR / f"home-{scenario}"
-    shutil.rmtree(home / "logs", ignore_errors=True)
-    home.mkdir(parents=True, exist_ok=True)
-    ready_file = home / "ready.txt"
+    env = dict(os.environ)
+    if REAL_PROFILE:
+        # Your own profile: signed in, real library. Only lines logged from now on count.
+        log = real_log()
+        LOG_OFFSET[scenario] = log.stat().st_size if log.exists() else 0
+        ready_file = MEASURE_DIR / "ready-real.txt"
+    else:
+        home = MEASURE_DIR / f"home-{scenario}"
+        shutil.rmtree(home / "logs", ignore_errors=True)
+        (home / "config").mkdir(parents=True, exist_ok=True)
+        # Throwaway profiles stay signed out and skip the first-run sign-in dialog.
+        (home / "config" / "settings.json").write_text('{"skip_sign_in": true}', encoding="utf-8")
+        ready_file = home / "ready.txt"
+        env["YTM_LITE_HOME"] = str(home)
     ready_file.unlink(missing_ok=True)
-    env = {**os.environ, "YTM_LITE_HOME": str(home)}
     started = time.time()
     proc = subprocess.Popen(
         [sys.executable, "-m", "ytm_lite", "--measure-ready", str(ready_file), *extra],
@@ -134,11 +159,20 @@ def stop(proc: subprocess.Popen[bytes]) -> None:
         proc.kill()
 
 
+def real_log() -> Path:
+    from platformdirs import user_log_dir
+
+    return Path(user_log_dir("ytm-lite", appauthor=False)) / "ytm-lite.log"
+
+
 def log_lines(scenario: str, *needles: str) -> list[str]:
-    log = MEASURE_DIR / f"home-{scenario}" / "logs" / "ytm-lite.log"
+    throwaway_log = MEASURE_DIR / f"home-{scenario}" / "logs" / "ytm-lite.log"
+    log = real_log() if REAL_PROFILE else throwaway_log
     if not log.exists():
         return []
-    lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    with log.open("rb") as fh:
+        fh.seek(LOG_OFFSET.get(scenario, 0) if REAL_PROFILE else 0)
+        lines = fh.read().decode("utf-8", errors="replace").splitlines()
     return [line for line in lines if any(n in line for n in needles)]
 
 
@@ -197,40 +231,54 @@ def run_window_idle(seconds: float) -> Result:
     )
 
 
-def run_playing(seconds: float, minimized: bool) -> Result:
+def run_playing(seconds: float, minimized: bool, playlist: str | None = None) -> Result:
     scenario = "playing" if minimized else "window"
     extra = ["--autoplay"] + (["--start-minimized"] if minimized else [])
+    if playlist:
+        extra += ["--open-playlist", playlist]
     proc, ready_file, _ = launch(scenario, *extra)
     try:
         wait_ready(ready_file)
         if not wait_for_log(scenario, "armed next track", 60):
             print("   (warning: next track never armed)")
-        time.sleep(3)
+        if playlist and not wait_for_log(scenario, "playlist loaded", 60):
+            print("   (warning: playlist never finished loading)")
         root = psutil.Process(proc.pid)
         samples = []
-        first = sample(root)
         t0 = time.time()
-        end = t0 + seconds
+        # Sample through the worker's idle exit (15 s after its last request), then
+        # `seconds` more of steady playback.
+        exited = False
+        while time.time() < t0 + 60 and not exited:
+            samples.append(sample(root))
+            exited = bool(log_lines(scenario, "worker exited"))
+            time.sleep(1)
+        steady_from = len(samples)
+        end = time.time() + seconds
         while time.time() < end:
             samples.append(sample(root))
             time.sleep(1)
-        last = sample(root)
         wall = time.time() - t0
     finally:
         stop(proc)
-    LAST_BREAKDOWN.extend(samples[-1].breakdown)
-    cpu_core = (last.cpu - first.cpu) / wall * 100
+    steady = samples[steady_from:] or samples
+    LAST_BREAKDOWN.extend(steady[-1].breakdown)
+    cpu_core = cpu_used(samples) / wall * 100
     cpus = psutil.cpu_count() or 1
     label = "playing, minimized" if minimized else "playing, window open"
+    if playlist:
+        label += ", big playlist visible"
     return Result(
         label,
         {
-            "RSS (median)": mb(statistics.median(s.rss for s in samples)),
-            "RSS (max)": mb(max(s.rss for s in samples)),
-            "private (median)": mb(statistics.median(s.private for s in samples)),
+            "RSS steady (median)": mb(statistics.median(s.rss for s in steady)),
+            "private steady": mb(statistics.median(s.private for s in steady)),
+            "RSS peak (worker up)": mb(max(s.rss for s in samples)),
             "processes (max)": str(max(s.processes for s in samples)),
-            "threads": str(samples[-1].threads),
-            "CPU": f"{cpu_core:.2f}% of one core = {cpu_core / cpus:.3f}% of {cpus} logical CPUs",
+            "threads": str(steady[-1].threads),
+            "CPU incl. resolves": (
+                f"{cpu_core:.2f}% of one core = {cpu_core / cpus:.3f}% of {cpus} logical CPUs"
+            ),
         },
     )
 
@@ -239,7 +287,20 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("scenarios", nargs="*", default=["startup", "idle", "playing", "window"])
     parser.add_argument("--seconds", type=float, default=60)
+    parser.add_argument(
+        "--playlist",
+        default=BIG_PLAYLIST,
+        help="playlist shown in the 'window' scenario (default: a public 500-track one; "
+        "LM is your Liked Songs with --real-profile)",
+    )
+    parser.add_argument(
+        "--real-profile",
+        action="store_true",
+        help="use your own (signed-in) profile instead of a throwaway signed-out one",
+    )
     args = parser.parse_args()
+    global REAL_PROFILE
+    REAL_PROFILE = args.real_profile
     MEASURE_DIR.mkdir(exist_ok=True)
 
     results = []
@@ -252,7 +313,7 @@ def main() -> int:
         elif scenario == "playing":
             result = run_playing(args.seconds, minimized=True)
         elif scenario == "window":
-            result = run_playing(min(args.seconds, 30), minimized=False)
+            result = run_playing(min(args.seconds, 30), minimized=False, playlist=args.playlist)
         else:
             parser.error(f"unknown scenario {scenario}")
         for key, value in result.values.items():

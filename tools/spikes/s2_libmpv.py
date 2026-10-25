@@ -55,7 +55,7 @@ def snap(label: str) -> None:
 def resolve(video_ids: dict[str, str | None]) -> dict[str, dict[str, Any]]:
     cache = ROOT / ".measure" / "cache"
     proc = subprocess.Popen(
-        [sys.executable, "-I", "-m", "ytm_resolver"],
+        [sys.executable, "-I", "-m", "ytm_worker"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

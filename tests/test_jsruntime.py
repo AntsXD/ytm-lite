@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ytm_resolver import jsruntime
+from ytm_worker import jsruntime
 
 
 def _fake_candidates(found: list[tuple[str, Path]]) -> object:

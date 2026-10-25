@@ -22,7 +22,7 @@ from ytm_lite.app.models import Track
 from ytm_lite.app.play_queue import PlayQueue, QueueEntry, RepeatMode
 from ytm_lite.app.player import Player
 from ytm_lite.app.resolver import ResolverClient, StreamInfo
-from ytm_resolver.protocol import ErrorKind, Priority
+from ytm_worker.protocol import ErrorKind, Priority
 
 log = logging.getLogger(__name__)
 

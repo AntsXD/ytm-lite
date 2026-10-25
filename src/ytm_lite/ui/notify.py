@@ -1,9 +1,40 @@
-"""Small non-blocking notifications: a toast in the bottom-right corner."""
+"""Small non-blocking notifications: a toast in the bottom-right corner, and a banner
+across the top for problems that need an action (like signing in again)."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QToolButton, QWidget
+
+
+class Banner(QFrame):
+    action_clicked = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Banner")
+        self.setStyleSheet("#Banner { background: #3a2a10; border-bottom: 1px solid #6b4e1a; }")
+        self._text = QLabel()
+        self._text.setWordWrap(True)
+        self._action = QPushButton()
+        self._action.clicked.connect(self.action_clicked)
+        close = QToolButton()
+        close.setText("✕")
+        close.setAutoRaise(True)
+        close.setToolTip("Dismiss")
+        close.clicked.connect(self.hide)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(16, 6, 8, 6)
+        row.addWidget(self._text, 1)
+        row.addWidget(self._action)
+        row.addWidget(close)
+        self.hide()
+
+    def show_message(self, text: str, action: str | None = None) -> None:
+        self._text.setText(text)
+        self._action.setText(action or "")
+        self._action.setVisible(bool(action))
+        self.show()
 
 
 class Toast(QLabel):

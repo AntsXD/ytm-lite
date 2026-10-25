@@ -4,9 +4,9 @@ from typing import Any
 
 import pytest
 
-from ytm_resolver.jsruntime import JsRuntime
-from ytm_resolver.protocol import ErrorKind
-from ytm_resolver.resolve import (
+from ytm_worker.jsruntime import JsRuntime
+from ytm_worker.protocol import ErrorKind
+from ytm_worker.resolve import (
     ANONYMOUS_CLIENTS,
     FALLBACK_LIFETIME,
     SIGNED_IN_CLIENTS,
@@ -112,7 +112,7 @@ def test_attempts_user_override() -> None:
 
 
 def test_resolve_falls_back_only_on_extraction_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    resolver = Resolver(ResolverConfig(cachedir="c", js_runtime=JsRuntime("deno", "d", "2.9.8")))
+    resolver = Resolver(ResolverConfig(cachedir="c"), lambda: JsRuntime("deno", "d", "2.9.8"))
     calls: list[tuple[str, ...]] = []
 
     def fake_extract(video_id: str, clients: tuple[str, ...], use_js: bool, fmt: str | None) -> Any:

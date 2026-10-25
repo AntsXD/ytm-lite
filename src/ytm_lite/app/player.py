@@ -100,9 +100,9 @@ class Player(QObject):
 
     def _ensure(self) -> Any:
         if self._mpv is None:
-            if sys.platform != "win32":
-                # Qt resets the C locale; libmpv needs "C" numerics.
-                locale.setlocale(locale.LC_NUMERIC, "C")
+            # mpv_create() returns NULL unless numbers use the "C" locale, and Qt (on
+            # Linux) or other libraries may have changed it.
+            locale.setlocale(locale.LC_NUMERIC, "C")
             import mpv
 
             options = {key.replace("-", "_"): value for key, value in MPV_OPTIONS.items()}

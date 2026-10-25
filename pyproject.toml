@@ -6,11 +6,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "PySide6-Essentials>=6.12",
-    "ytmusicapi>=1.12.3",
     "mpv>=1.0.8",
     "platformdirs>=4.3",
     "psutil>=7.0",
-    # Used only by the resolver worker process (src/ytm_resolver).
+    # Used only by the worker process (src/ytm_worker).
+    "ytmusicapi>=1.12.3",
     "yt-dlp>=2026.10.21",
     "yt-dlp-ejs>=0.8",
     "deno>=2.3",
@@ -29,7 +29,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ytm_lite", "src/ytm_resolver"]
+packages = ["src/ytm_lite", "src/ytm_worker"]
 
 [tool.uv]
 default-groups = ["dev"]

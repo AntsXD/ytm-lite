@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ytm_resolver.redact import REDACTED, redact
+from ytm_worker.redact import REDACTED, redact
 
 
 def test_raw_header_lines() -> None:

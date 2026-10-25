@@ -96,6 +96,8 @@ class Settings:
     close_to_tray: bool = True
     radio_autoplay: bool = True
     report_history: bool = True
+    # The user chose "Continue without signing in": don't ask again at startup.
+    skip_sign_in: bool = False
     # "auto", "deno", "node", or a path to a runtime executable.
     js_runtime: str = "auto"
     # yt-dlp player clients to use instead of the automatic choice.

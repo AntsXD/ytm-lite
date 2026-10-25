@@ -10,7 +10,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import TracebackType
 
-from ytm_resolver.redact import redact
+from ytm_worker.redact import redact
 
 LOG_FILE = "ytm-lite.log"
 _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"

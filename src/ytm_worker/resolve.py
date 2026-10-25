@@ -7,16 +7,20 @@ yt-dlp is imported lazily, and only the YouTube extractor is registered, so the 
 from __future__ import annotations
 
 import io
+import json
 import logging
+import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from ytm_resolver.jsruntime import JsRuntime
-from ytm_resolver.protocol import ErrorKind, StreamDict
+from ytm_worker.imports import IMPORT_LOCK
+from ytm_worker.jsruntime import JsRuntime
+from ytm_worker.protocol import ErrorKind, StreamDict
 
-log = logging.getLogger("ytm_resolver")
+log = logging.getLogger("ytm_worker")
 
 # 774 = Premium Opus ~256k, 141 = Premium AAC 256k, 251 = Opus ~160k, 140 = AAC 128k.
 DEFAULT_FORMAT = "774/141/251/140/bestaudio"
@@ -116,7 +120,6 @@ def stream_from_info(video_id: str, info: dict[str, Any], now: float | None = No
 class ResolverConfig:
     cachedir: str
     cookies: str | None = None  # Netscape cookies.txt text, kept in memory only
-    js_runtime: JsRuntime | None = None
     player_clients: tuple[str, ...] = ()  # user override; empty means automatic
     format: str = DEFAULT_FORMAT
 
@@ -126,13 +129,28 @@ class ResolverConfig:
 
 
 class _YtdlpLogger:
-    """Routes yt-dlp's output into logging (redacted by the handler's formatter)."""
+    """Routes yt-dlp's output into logging (redacted by the handler's formatter).
+
+    With YTM_WORKER_TRACE=1 in the environment, yt-dlp's progress lines are logged at
+    INFO with the time since the resolve started, to see where a slow resolve goes.
+    """
+
+    trace = bool(os.environ.get("YTM_WORKER_TRACE"))
+
+    def __init__(self) -> None:
+        self.started = time.monotonic()
+
+    def _progress(self, msg: str) -> None:
+        if self.trace and not msg.startswith("[debug]"):
+            log.info("+%.2fs %s", time.monotonic() - self.started, msg[:160])
+        else:
+            log.debug("%s", msg)
 
     def debug(self, msg: str) -> None:
-        log.debug("%s", msg)
+        self._progress(msg)
 
     def info(self, msg: str) -> None:
-        log.debug("%s", msg)
+        self._progress(msg)
 
     def warning(self, msg: str) -> None:
         log.warning("%s", msg)
@@ -142,18 +160,26 @@ class _YtdlpLogger:
 
 
 class Resolver:
-    """Wraps YoutubeDL. Not thread-safe: use one Resolver per thread."""
+    """Wraps YoutubeDL. Not thread-safe: use one Resolver per thread.
 
-    def __init__(self, config: ResolverConfig) -> None:
+    `runtime` finds the JS runtime; it's only called when a client set needs one, so a
+    signed-out worker never even probes for Deno or Node.
+    """
+
+    def __init__(
+        self, config: ResolverConfig, runtime: Callable[[], JsRuntime | None] = lambda: None
+    ) -> None:
         self.config = config
+        self._runtime = runtime
         self._ydl: dict[bool, Any] = {}  # keyed by "JS runtime enabled"
 
     def _client(self, use_js: bool) -> Any:
         if use_js not in self._ydl:
-            from yt_dlp import YoutubeDL
-            from yt_dlp.extractor.youtube import YoutubeIE
+            with IMPORT_LOCK:
+                from yt_dlp import YoutubeDL
+                from yt_dlp.extractor.youtube import YoutubeIE
 
-            runtime = self.config.js_runtime if use_js else None
+            runtime = self._runtime() if use_js else None
             params: dict[str, Any] = {
                 "format": self.config.format,
                 "skip_download": True,
@@ -204,17 +230,25 @@ class Resolver:
         youtube_args: dict[str, list[str]] = {"skip": ["hls", "dash"]}
         if clients:
             youtube_args["player_client"] = list(clients)
+        if clients == SIGNED_IN_CLIENTS:
+            # Use built-in client defaults instead of downloading web_music's config page:
+            # ~1.2 s faster, and Premium formats still come back.
+            youtube_args["player_skip"] = ["configs"]
+        # Experiments: YTM_WORKER_EXTRACTOR_ARGS='{"player_skip": ["configs"]}'
+        extra = os.environ.get("YTM_WORKER_EXTRACTOR_ARGS")
+        if extra:
+            youtube_args.update(json.loads(extra))
         ydl.params["extractor_args"] = {"youtube": youtube_args}
         ydl.params["format"] = format_override or self.config.format
         url = f"https://music.youtube.com/watch?v={video_id}"
         started = time.monotonic()
+        ydl.params["logger"].started = started
         try:
             info = ydl.extract_info(url, download=False, ie_key="Youtube")
         except DownloadError as exc:
             message = str(exc).removeprefix("ERROR: ")
-            raise ResolveError(
-                classify(message, self.config.js_runtime is not None), message
-            ) from exc
+            has_js = self._runtime() is not None if use_js else True
+            raise ResolveError(classify(message, has_js), message) from exc
         if not isinstance(info, dict):
             raise ResolveError(ErrorKind.EXTRACTION, "yt-dlp returned nothing")
         stream = stream_from_info(video_id, info)

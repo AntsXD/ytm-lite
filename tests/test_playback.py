@@ -16,7 +16,8 @@ from ytm_lite.app.play_queue import PlayQueue, RepeatMode
 from ytm_lite.app.playback import PlaybackController, PlaybackState
 from ytm_lite.app.player import Player
 from ytm_lite.app.resolver import ResolverClient, StreamInfo
-from ytm_resolver.protocol import Priority
+from ytm_lite.app.worker_client import WorkerProcess
+from ytm_worker.protocol import Priority
 
 NOW, PREFETCH = int(Priority.NOW), int(Priority.PREFETCH)
 
@@ -93,7 +94,7 @@ class FakePlayer(Player):
 
 class FakeResolver(ResolverClient):
     def __init__(self, cache_dir: Path) -> None:
-        super().__init__(cache_dir)
+        super().__init__(WorkerProcess(cache_dir))  # never started: request() is faked
         self.requests: list[tuple[str, int]] = []
 
     def request(

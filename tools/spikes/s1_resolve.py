@@ -54,12 +54,16 @@ class TreeSampler(threading.Thread):
 
 
 def read_message(proc: subprocess.Popen[bytes]) -> dict[str, Any]:
+    """The next ready/result/error message (informational ones are printed and skipped)."""
     assert proc.stdout is not None
-    line = proc.stdout.readline()
-    if not line:
-        raise RuntimeError("worker exited")
-    message: dict[str, Any] = json.loads(line)
-    return message
+    while True:
+        line = proc.stdout.readline()
+        if not line:
+            raise RuntimeError("worker exited")
+        message: dict[str, Any] = json.loads(line)
+        if message["op"] in ("ready", "result", "error"):
+            return message
+        print(f"   ({message})")
 
 
 def send(proc: subprocess.Popen[bytes], message: dict[str, Any]) -> None:
@@ -75,7 +79,7 @@ def run(runtime: str, rounds: int) -> None:
     started = time.perf_counter()
     with stderr_log.open("wb") as err:
         proc = subprocess.Popen(
-            [sys.executable, "-I", "-m", "ytm_resolver"],
+            [sys.executable, "-I", "-m", "ytm_worker"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=err,
