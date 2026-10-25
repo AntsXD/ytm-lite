@@ -306,9 +306,18 @@ class MainWindow(QMainWindow):
             self._load(artist_page, lambda: api.artist(channel_id), artist_page.set_artist)
             return artist_page
         if kind == "home":
-            home = HomePage(s.workers, s.api, s.images, s.liked, s.controller, self.navigate)
+            home = HomePage(
+                s.workers,
+                s.api,
+                s.images,
+                s.liked,
+                s.controller,
+                self.navigate,
+                account_name=s.session.account_name,
+            )
             home.song_requested.connect(s.controller.start_radio)
             home.item_activated.connect(self._open_item)
+            home.play_requested.connect(self._quick_play)
             return home
         if kind == "search":
             search = SearchPage(
@@ -356,6 +365,32 @@ class MainWindow(QMainWindow):
             self.navigate(("playlist", item.id, item.title))
         elif isinstance(item, Track):
             self.s.controller.start_radio(item)
+
+    def _quick_play(self, item: SearchItem) -> None:
+        """Play an album, playlist or artist straight from its cover: its tracks (a
+        playlist's first hundred, an artist's top songs) are fetched, then played."""
+        api = self.s.api
+
+        def fetch() -> list[Track]:
+            if isinstance(item, AlbumSummary):
+                return list(api.album(item.id).tracks)
+            if isinstance(item, PlaylistSummary):
+                return list(api.playlist(item.id, 100).tracks)
+            if isinstance(item, ArtistSummary):
+                return list(api.artist(item.id).top_songs)
+            return [item]
+
+        self.s.workers.submit(fetch, on_done=self._play_fetched, on_error=self._play_failed)
+
+    def _play_fetched(self, tracks: list[Track]) -> None:
+        playable = [t for t in tracks if t.available]
+        if playable:
+            self.s.controller.play_tracks(playable)
+        else:
+            self.toast.show_message("Nothing there can be played.")
+
+    def _play_failed(self, error: Exception) -> None:
+        self.toast.show_message("Couldn't load that. Check your connection and try again.")
 
     def _page_tint(self, color: QColor) -> None:
         if self.sender() is self.stack.currentWidget():

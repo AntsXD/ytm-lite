@@ -4,17 +4,26 @@ of the window, the queue/lyrics side panel, settings, home shelves, synced lyric
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QListView
 from pytestqt.qtbot import QtBot
 
-from ytm_lite.app.models import HomeShelf, LyricLine, Lyrics, PlaylistSummary, Track
+from ytm_lite.app.models import (
+    AlbumSummary,
+    HomeShelf,
+    LyricLine,
+    Lyrics,
+    PlaylistSummary,
+    Track,
+)
 from ytm_lite.app.services import Services
 from ytm_lite.app.state import StateKeeper
 from ytm_lite.integrations.hotkeys import Hotkeys
 from ytm_lite.ui.lyrics_panel import LyricsPanel
-from ytm_lite.ui.pages.home_page import SHOWN, home_rows
+from ytm_lite.ui.pages.home_page import HomePage, greeting, two_lines
 from ytm_lite.ui.settings_dialog import SettingsDialog
 from ytm_lite.ui.shell import Shell
 
@@ -98,15 +107,43 @@ def test_settings_apply_and_save(services: Services, qtbot: QtBot) -> None:
     assert dialog.result() == 1
 
 
-def test_home_shelves_open_up_in_place() -> None:
-    items = tuple(PlaylistSummary(f"PL{i}", f"Mix {i}") for i in range(SHOWN + 3))
-    shelves = (HomeShelf("Quick picks", (Track("a", "A"),)), HomeShelf("Mixes", items))
-    rows = home_rows(shelves, set())
-    headers = [r for r in rows if r.kind == "header"]
-    assert [h.text for h in headers] == ["Quick picks", "Mixes"]
-    assert headers[0].action == "" and headers[1].action == "1"  # only the long one
-    assert len(rows) == 2 + 1 + SHOWN
-    assert len(home_rows(shelves, {1})) == 2 + 1 + len(items)
+def test_home_greets_and_lays_shelves_out_sideways(services: Services, qtbot: QtBot) -> None:
+    assert greeting(datetime(2026, 1, 1, 8), "Ants Doe") == "Good morning, Ants"
+    assert greeting(datetime(2026, 1, 1, 21)) == "Good evening"
+    page = HomePage(
+        services.workers, services.api, services.images, services.liked, services.controller
+    )
+    qtbot.addWidget(page)
+    songs = HomeShelf("Quick picks", tuple(Track(f"s{i}", f"S{i}") for i in range(9)))
+    album = AlbumSummary("MPRE1", "Album")
+    mixed = HomeShelf("New releases", (album, PlaylistSummary("PL1", "Mix")))
+    page._got((songs, mixed))
+    quick, releases = page.shelves
+    assert quick.view.songs and quick.view.flow() == QListView.Flow.TopToBottom  # columns
+    assert not releases.view.songs and releases.view.flow() == QListView.Flow.LeftToRight
+    opened: list[Any] = []
+    played: list[Any] = []
+    radio: list[Any] = []
+    page.item_activated.connect(opened.append)
+    page.play_requested.connect(played.append)
+    page.song_requested.connect(radio.append)
+    releases.view.opened.emit(album)
+    releases.view.play.emit(album)
+    quick.view.play.emit(songs.items[0])
+    assert opened == [album] and played == [album] and radio == [songs.items[0]]
+
+
+def test_titles_wrap_onto_two_lines() -> None:
+    from PySide6.QtGui import QFontMetrics
+
+    from ytm_lite.ui.theme import font
+
+    metrics = QFontMetrics(font(10))
+    width = metrics.horizontalAdvance("Random Access")
+    assert two_lines(metrics, "Random Access Memories", width) == ["Random Access", "Memories"]
+    lines = two_lines(metrics, "Random Access Memories (Drumless Edition)", width)
+    assert len(lines) == 2 and lines[1].endswith("…")
+    assert two_lines(metrics, "Short", width) == ["Short"]
 
 
 class FakeLyricsApi(QObject):
