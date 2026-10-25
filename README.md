@@ -3,6 +3,8 @@
 A lightweight native YouTube Music desktop client, built to sit next to RAM-hungry games.
 Qt Widgets UI, libmpv for audio, no embedded browser of any kind.
 
+Unofficial: not affiliated with or endorsed by Google or YouTube. Use it with your own account.
+
 **Status:** milestone 3 of 5 (play queue and now-playing bar). Next: search, album and artist
 pages, the tray and media keys (milestone 4).
 
